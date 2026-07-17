@@ -11,6 +11,7 @@
 #include "esp_ota_ops.h"
 #include "esp_system.h"
 #include "web_ota.h"
+#include "adc_monitor.h"
 
 static const char *TAG = "WEB_OTA";
 
@@ -32,6 +33,7 @@ static const char *TAG = "WEB_OTA";
 #define HTML_BODY \
     "<h2>ESP32 Firmware Update</h2>" \
     HTML_INFO_PLACEHOLDER \
+    "<p><b>Battery:</b> <span id='battery'>--</span></p>" \
     "<input type='file' id='fileInput' accept='.bin'><br>" \
     "<button onclick='upload()'>Upload & Update</button>" \
     "<p id='status'></p>" \
@@ -50,6 +52,17 @@ static const char *TAG = "WEB_OTA";
     "    document.getElementById('status').innerText = 'Error: ' + err;" \
     "  });" \
     "}" \
+    "function fetchBattery() {" \
+    "  fetch('/api/battery')" \
+    "    .then(r => r.json())" \
+    "    .then(d => {" \
+    "      document.getElementById('battery').innerText =" \
+    "        d.voltage_mv + ' mV, ' + d.soc + '%';" \
+    "    })" \
+    "    .catch(() => {});" \
+    "}" \
+    "setInterval(fetchBattery, 180000);" \
+    "fetchBattery();" \
     "</script>" \
     "</body>" \
     "</html>"
@@ -86,6 +99,21 @@ static esp_err_t index_get_handler(httpd_req_t *req) {
     httpd_resp_send_chunk(req, info_html, HTTPD_RESP_USE_STRLEN);
     httpd_resp_send_chunk(req, body_suffix, body_suffix_len);
     httpd_resp_send_chunk(req, NULL, 0);
+    return ESP_OK;
+}
+
+// 处理 GET /api/battery 请求，返回电池 JSON
+static esp_err_t battery_get_handler(httpd_req_t *req) {
+    BatteryInfo info;
+    if (get_battery_info(&info)) {
+        char json[64];
+        snprintf(json, sizeof(json),
+            "{\"voltage_v\":%4.2f,\"soc\":%d}", info.voltage_v, info.soc);
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, json);
+    } else {
+        httpd_resp_send_500(req);
+    }
     return ESP_OK;
 }
 
@@ -180,6 +208,14 @@ static void start_webserver(void) {
             .user_ctx = NULL
         };
         httpd_register_uri_handler(server, &uri_post);
+
+        httpd_uri_t uri_battery = {
+            .uri      = "/api/battery",
+            .method   = HTTP_GET,
+            .handler  = battery_get_handler,
+            .user_ctx = NULL
+        };
+        httpd_register_uri_handler(server, &uri_battery);
         ESP_LOGI(TAG, "Web server started.");
     }
 }
