@@ -3,42 +3,27 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "driver/gpio.h"
+#include "nvs_flash.h"
+#include "web_ota.h"
 
-// Test GPIO (change to match your board's actual LED pin)
-#define BLINK_GPIO GPIO_NUM_22 // GPIO_NUM_22 is the BUZZER pin 
+#define BLINK_GPIO GPIO_NUM_22 // GPIO_NUM_22 is the BUZZER pin
 
 static const char *TAG = "main";
 
-void app_main(void) 
+//蜂鸣器任务（物理心跳）
+void blink_task(void *pvParameter)
 {
-    ESP_LOGI(TAG, "==================================================");
-    ESP_LOGI(TAG, "ESP32-C6 boot successful! 4MB Flash firmware running.");
-    ESP_LOGI(TAG, "==================================================");
-
-    // Initialize test GPIO
-    gpio_reset_pin(BLINK_GPIO);
-    gpio_set_direction(BLINK_GPIO, GPIO_MODE_OUTPUT);
-
     uint32_t boot_count = 0;
     int led_state = 1;
 
-    // Toggle LED state
-    led_state = 0;
-    gpio_set_level(BLINK_GPIO, led_state);
-    vTaskDelay(pdMS_TO_TICKS(100));
-    led_state = 1;
-    gpio_set_level(BLINK_GPIO, led_state);
-    vTaskDelay(pdMS_TO_TICKS(100));
-    led_state = 0;
-    gpio_set_level(BLINK_GPIO, led_state);
-    vTaskDelay(pdMS_TO_TICKS(100));
-    led_state = 1;
-    gpio_set_level(BLINK_GPIO, led_state);
-    vTaskDelay(pdMS_TO_TICKS(100));
+    // 初始状态翻转测试
+    for(int i=0; i<4; i++){
+        led_state = !led_state;
+        gpio_set_level(BLINK_GPIO, led_state);
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
 
     while (1) {
-
-        // Print counter every second — if serial output is continuous and incrementing, no crash loop is occurring
         ESP_LOGI(TAG, "System running normally... counter: %lu, LED: %d", ++boot_count, led_state);
 
         if(boot_count % 60 == 0){
@@ -48,8 +33,32 @@ void app_main(void)
             led_state = 1;
             gpio_set_level(BLINK_GPIO, led_state);
         }
-        
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
 
+void app_main(void) 
+{
+    ESP_LOGI(TAG, "==================================================");
+    ESP_LOGI(TAG, "ESP32-C6 boot successful! Web OTA enabled.");
+    ESP_LOGI(TAG, "==================================================");
+
+    // 1. 初始化 NVS (WiFi 和 OTA 标志位强依赖 NVS)
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+      ESP_ERROR_CHECK(nvs_flash_erase());
+      ret = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(ret);
+
+    // 2. 初始化硬件引脚
+    gpio_reset_pin(BLINK_GPIO);
+    gpio_set_direction(BLINK_GPIO, GPIO_MODE_OUTPUT);
+
+    // 3. 启动 WiFi AP 与 OTA Web 服务器
+    start_web_ota();
+
+    // 4. 创建原有的业务任务
+    // 参数：任务函数, 任务名称, 栈大小(字节), 传递参数, 优先级, 句柄
+    xTaskCreate(blink_task, "blink_task", 4096, NULL, 5, NULL);
+}
