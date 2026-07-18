@@ -57,11 +57,11 @@ static const char *TAG = "WEB_OTA";
     "    .then(r => r.json())" \
     "    .then(d => {" \
     "      document.getElementById('battery').innerText =" \
-    "        d.voltage_mv + ' mV, ' + d.soc + '%';" \
+    "        d.voltage_v + ' V, ' + d.soc + '%';" \
     "    })" \
     "    .catch(() => {});" \
     "}" \
-    "setInterval(fetchBattery, 180000);" \
+    "setInterval(fetchBattery, 60000);" \
     "fetchBattery();" \
     "</script>" \
     "</body>" \

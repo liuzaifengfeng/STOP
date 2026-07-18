@@ -86,7 +86,7 @@ static void adc_monitor_task(void *pvParameter) {
         //ESP_LOGI(TAG, "Boot sample[%d]: raw=%d, voltage=%d mV", i, raw, voltage_mv);
         vTaskDelay(pdMS_TO_TICKS(100));
     }
-    int V_bat = adc_sum / 10 * 2;//电阻分压，实际电压为 adc_avg * 2V
+    int V_bat = adc_sum / 50 * 2;//电阻分压，实际电压为 adc_avg * 2V
     int soc = get_battery_soc(V_bat);
 
     // 更新全局缓存
@@ -94,7 +94,7 @@ static void adc_monitor_task(void *pvParameter) {
     g_soc = soc;
 
     ESP_LOGI(TAG, "battery voltage: %d mV, soc: %d%%", V_bat, soc);
-    vTaskDelay(pdMS_TO_TICKS(170000));
+    vTaskDelay(pdMS_TO_TICKS(50000));
     }
 }
 
@@ -124,6 +124,19 @@ void adc_monitor_init(void) {
     } else if (cali_ret == ESP_ERR_NOT_SUPPORTED) {
         ESP_LOGW(TAG, "Curve fitting not supported, falling back to manual conversion");
     }
+
+    // 启动前先同步采样一次，确保页面刷新时能立即获取到电池数据
+    int boot_sum = 0;
+    for (int i = 0; i < 10; i++) {
+        int raw;
+        ESP_ERROR_CHECK(adc_oneshot_read(adc_handle, ADC_CHAN, &raw));
+        boot_sum += raw;
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    int boot_v = boot_sum / 10 * 2;
+    g_voltage_mv = boot_v;
+    g_soc = get_battery_soc(boot_v);
+    ESP_LOGI(TAG, "Initial battery: %d mV, soc: %d%%", boot_v, g_soc);
 
     // 创建监测任务
     xTaskCreate(adc_monitor_task, "adc_monitor", 4096, NULL, 5, NULL);
