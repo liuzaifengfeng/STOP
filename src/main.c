@@ -16,24 +16,24 @@ static const char *TAG = "main";
 static void blink_task(void *pvParameter)
 {
     uint32_t boot_count = 0;
-    int led_state = 1;
+    int buzzer_state = 1;
 
     // 初始状态翻转测试
     for (int i = 0; i < 4; i++) {
-        led_state = !led_state;
-        gpio_set_level(BLINK_GPIO, led_state);
+        buzzer_state = !buzzer_state;
+        gpio_set_level(BLINK_GPIO, buzzer_state);
         vTaskDelay(pdMS_TO_TICKS(100));
     }
 
     while (1) {
-        ESP_LOGI(TAG, "System running normally... counter: %lu, LED: %d", ++boot_count, led_state);
+        ESP_LOGI(TAG, "System running normally... counter: %lu, BUZZER: %d", ++boot_count, buzzer_state);
 
         if (boot_count % 60 == 0) {
-            led_state = 0;
-            gpio_set_level(BLINK_GPIO, led_state);
+            buzzer_state = 0;
+            gpio_set_level(BLINK_GPIO, buzzer_state);
             vTaskDelay(pdMS_TO_TICKS(200));
-            led_state = 1;
-            gpio_set_level(BLINK_GPIO, led_state);
+            buzzer_state = 1;
+            gpio_set_level(BLINK_GPIO, buzzer_state);
         }
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
