@@ -131,6 +131,21 @@ typedef struct {
 void e22_init(void);
 
 /**
+ * 使 E22 进入休眠状态
+ * 
+ * @param sleep_time_ms 休眠时长（单位：毫秒）。
+ *                      - 0: 无限休眠，直到调用 e22_wakeup() 或重新初始化
+ *                      - >0: 休眠指定毫秒后自动唤醒并恢复接收/配置
+ * @return esp_err_t ESP_OK 成功
+ */
+esp_err_t e22_sleep(uint32_t sleep_time_ms);
+
+/**
+ * 手动从休眠状态唤醒 E22 模块
+ */
+void e22_wakeup(void);
+
+/**
  * 获取 LoRa 发送队列句柄 (其他任务可向该队列发送 lora_tx_msg_t)
  * @return 发送队列句柄, 若未初始化则返回 NULL
  */
@@ -177,6 +192,14 @@ bool e22_send_msg_blocking(const lora_tx_msg_t *msg, TickType_t timeout_ticks);
  * @return true=成功出队, false=超时或参数无效
  */
 bool e22_recv_msg_blocking(lora_rx_msg_t *msg, TickType_t timeout_ticks);
+
+/* ==================== SX1268 底层 SPI 命令 ==================== */
+
+/**
+ * 读取 SX1268 状态寄存器 (GetStatus 命令 0xC0)
+ * @return 状态字节
+ */
+uint8_t sx1268_get_status(void);
 
 #ifdef __cplusplus
 }

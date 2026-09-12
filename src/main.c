@@ -26,7 +26,7 @@ static void blink_task(void *pvParameter)
     }
 
     while (1) {
-        ESP_LOGI(TAG, "System running normally... counter: %lu, BUZZER: %d", ++boot_count, buzzer_state);
+        ESP_LOGI(TAG, "System running normally... counter: %lu", ++boot_count);
 
         if (boot_count % 60 == 0) {
             buzzer_state = 0;
@@ -35,7 +35,7 @@ static void blink_task(void *pvParameter)
             buzzer_state = 1;
             gpio_set_level(BLINK_GPIO, buzzer_state);
         }
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        vTaskDelay(pdMS_TO_TICKS(10000));
     }
 }
 
@@ -116,4 +116,15 @@ void app_main(void)
     // 7. 创建 LoRa 收发演示任务 (可根据需要启用)
     //xTaskCreate(lora_rx_demo_task, "lora_rx_demo", 4096, NULL, 5, NULL);
     //xTaskCreate(lora_tx_demo_task, "lora_tx_demo", 4096, NULL, 5, NULL);
+
+    vTaskDelay(pdMS_TO_TICKS(20000));
+    for (int i = 0; i < 1000; i++){
+        e22_sleep(0);
+        vTaskDelay(pdMS_TO_TICKS(5000));
+        esp_light_sleep(1000 * 60 * 60 * 1);
+        vTaskDelay(pdMS_TO_TICKS(100));
+        e22_wakeup();
+        ESP_LOGI(TAG, "Woke up from light sleep %d", i);
+        vTaskDelay(pdMS_TO_TICKS(60000));
+    }
 }

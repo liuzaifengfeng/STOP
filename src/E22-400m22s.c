@@ -88,11 +88,9 @@ static void sx1268_read_cmd(uint8_t opcode, uint8_t *rx_data, uint16_t rx_len) {
     uint8_t rx_buf[256] = {0};
     tx_buf[0] = opcode;
 
-    // SX1268 读命令: 发送 opcode(1B) + 1B status/dummy, 再读取 rx_len 数据
-    uint16_t total_len = 1 + 1 + rx_len;
-    if (opcode == SX1268_OP_GET_STATUS) {
-        total_len = 1 + rx_len;
-    }
+    // SX1268 标准命令读：Opcode(1B) -> 芯片返回 Status(1B) + 数据(rx_len)
+    // 只有读寄存器 (0x1D) 机制才需要额外的 Dummy Byte
+    uint16_t total_len = 1 + rx_len;
 
     spi_transaction_t t = {
         .length    = total_len * 8,
@@ -102,10 +100,9 @@ static void sx1268_read_cmd(uint8_t opcode, uint8_t *rx_data, uint16_t rx_len) {
     };
     ESP_ERROR_CHECK(spi_device_transmit(spi_dev, &t));
 
-    if (opcode == SX1268_OP_GET_STATUS) {
-        if (rx_len > 0 && rx_data != NULL) memcpy(rx_data, rx_buf + 1, rx_len);
-    } else {
-        if (rx_len > 0 && rx_data != NULL) memcpy(rx_data, rx_buf + 2, rx_len);
+    // 偏移 1 字节提取数据（rx_buf[0] 是发送 opcode 时 MISO 上的 status）
+    if (rx_len > 0 && rx_data != NULL) {
+        memcpy(rx_data, rx_buf + 1, rx_len);
     }
 }
 
@@ -162,7 +159,7 @@ static uint8_t __attribute__((unused)) sx1268_spi_transfer(uint8_t opcode, const
 
 /* ==================== SX1268 上层操作函数 ==================== */
 
-static uint8_t __attribute__((unused)) sx1268_get_status(void) {
+uint8_t sx1268_get_status(void) {
     uint8_t status;
     sx1268_read_cmd(SX1268_OP_GET_STATUS, &status, 1);
     return status;
@@ -305,8 +302,12 @@ static void sx1268_get_packet_status(lora_rx_msg_t *msg) {
 
 // 校准
 static void sx1268_calibrate(void) {
-    uint8_t data[] = { 0x7F }; // 校准所有
+    uint8_t data[] = { 0x7F }; 
     sx1268_write_cmd(SX1268_OP_CALIBRATE, data, 1);
+    
+    // 关键点：Calibrate 耗时较长，必须强制 wait_busy 或延时 5ms 以上
+    vTaskDelay(pdMS_TO_TICKS(10)); 
+    wait_busy(1000);
 }
 
 // ESP32 FSPI 芯片选择 (通过 GPIO 手动控制 NSS)
@@ -329,31 +330,37 @@ static void IRAM_ATTR spi_post_cb(spi_transaction_t *t) {
 static void e22_hw_init(void) {
     ESP_LOGI(TAG, "HW init: configuring SPI2 (FSPI) and control pins...");
 
-    /* ----- 1. 配置控制引脚 ----- */
-    gpio_config_t io_cfg = {
+/* ----- 1. 配置输出引脚 (NSS, NRST, RXEN, TXEN) ----- */
+    gpio_config_t out_cfg = {
         .pin_bit_mask = (1ULL << E22_PIN_NSS)
-                      | (1ULL << E22_PIN_BUSY)
-                      | (1ULL << E22_PIN_DIO1)
                       | (1ULL << E22_PIN_NRST)
                       | (1ULL << E22_PIN_RXEN)
                       | (1ULL << E22_PIN_TXEN),
-        .mode = GPIO_MODE_INPUT_OUTPUT,
-        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .mode = GPIO_MODE_OUTPUT,            // 纯输出模式
+        .pull_up_en = GPIO_PULLUP_DISABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .intr_type = GPIO_INTR_DISABLE,
     };
-    gpio_config(&io_cfg);
+    gpio_config(&out_cfg);
 
-    // NSS 初始高
+    // 设置初始状态
     gpio_set_level(E22_PIN_NSS, 1);
-    // BUSY 默认为输入
-    // NRST 初始高 (不复位)
     gpio_set_level(E22_PIN_NRST, 1);
-    // RXEN / TXEN 初始低
     gpio_set_level(E22_PIN_RXEN, 0);
     gpio_set_level(E22_PIN_TXEN, 0);
 
-    /* ----- 2. 配置 SPI2 主机 ----- */
+    /* ----- 2. 配置输入引脚 (BUSY, DIO1) ----- */
+    gpio_config_t in_cfg = {
+        .pin_bit_mask = (1ULL << E22_PIN_BUSY)
+                      | (1ULL << E22_PIN_DIO1),
+        .mode = GPIO_MODE_INPUT,             // 纯输入模式
+        .pull_up_en = GPIO_PULLUP_DISABLE,   // 禁用上拉，建议开启下拉
+        .pull_down_en = GPIO_PULLDOWN_ENABLE,// 开启下拉，确保未连线时默认为0
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&in_cfg);
+
+    /* ----- 3. 配置 SPI2 主机 ----- */
     spi_bus_config_t bus_cfg = {
         .mosi_io_num     = E22_PIN_MOSI,
         .miso_io_num     = E22_PIN_MISO,
@@ -375,10 +382,6 @@ static void e22_hw_init(void) {
     };
 
     ESP_ERROR_CHECK(spi_bus_add_device(E22_SPI_HOST, &dev_cfg, &spi_dev));
-
-    // 将 BUSY/DIO1 重新配置为输入
-    gpio_set_direction(E22_PIN_BUSY, GPIO_MODE_INPUT);
-    gpio_set_direction(E22_PIN_DIO1, GPIO_MODE_INPUT);
 
     ESP_LOGI(TAG, "SPI2 (FSPI) initialized: MOSI=%d MISO=%d SCK=%d NSS=%d @1MHz",
              E22_PIN_MOSI, E22_PIN_MISO, E22_PIN_SCK, E22_PIN_NSS);
@@ -638,6 +641,58 @@ QueueHandle_t e22_get_rx_queue(void) {
 
 e22_mode_t e22_get_mode(void) {
     return g_mode;
+}
+
+/* ==================== 休眠与唤醒实现 ==================== */
+
+// 手动唤醒 SX1268 (通过拉低 NSS 触发 NSS 下降沿)
+void e22_wakeup(void) {
+    if (g_mode != E22_MODE_SLEEP) {
+        return;
+    }
+    
+    ESP_LOGI(TAG, "Waking up SX1268 via NSS low pulse...");
+    
+    // 1. 通过拉低 NSS 唤醒 SX1268
+    spi_nss_low();
+    vTaskDelay(pdMS_TO_TICKS(20));
+    spi_nss_high();
+    
+    // 2. 等待 BUSY 引脚变低 (表示 SX1268 芯片内部 RC 振荡器起振并准备就绪)
+    wait_busy(1000);
+
+    // 3. 唤醒后，重新设置 Standby 模式并恢复 RF 寄存器配置
+    sx1268_set_standby(SX1268_STANDBY_RC);
+    e22_configure();
+    e22_start_rx();
+    
+    ESP_LOGI(TAG, "SX1268 Wakeup complete.");
+}
+
+// 供外部或任务调用的休眠函数
+esp_err_t e22_sleep(uint32_t sleep_time_ms) {
+    ESP_LOGI(TAG, "Entering sleep mode, duration: %lu ms...", sleep_time_ms);
+
+    // 1. 关闭 RF 开关，防止泄漏电流
+    rf_switch_idle();
+
+    // 2. 先切到 Standby 模式
+    sx1268_set_standby(SX1268_STANDBY_RC);
+    vTaskDelay(pdMS_TO_TICKS(2));
+
+    // 3. 发送 SetSleep 命令 (0x04 表示 Warm Start，唤醒时保留 SRAM 配置数据)
+    sx1268_set_sleep(SX1268_SLEEP_WARM_START);
+    g_mode = E22_MODE_SLEEP;
+
+    // 4. 如果传入参数大于 0，由主控等待指定时间后自动唤醒
+    if (sleep_time_ms > 0) {
+        vTaskDelay(pdMS_TO_TICKS(sleep_time_ms));
+        e22_wakeup();
+    } else {
+        ESP_LOGI(TAG, "E22 set to infinite sleep, call e22_wakeup() to wake up.");
+    }
+
+    return ESP_OK;
 }
 
 /* ==================== 消息队列伪函数 (预留接口, 供上层应用实现) ==================== */

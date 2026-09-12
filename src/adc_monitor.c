@@ -2,6 +2,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
+#include "esp_sleep.h"
 #include "esp_adc/adc_oneshot.h"
 #include "esp_adc/adc_cali_scheme.h"
 #include "adc_monitor.h"
@@ -148,4 +149,11 @@ bool get_battery_info(BatteryInfo *info) {
     info->voltage_v = g_voltage_mv / 1000.0f;
     info->soc = g_soc;
     return true;
+}
+
+void esp_light_sleep(uint32_t sleep_ms) {
+    ESP_LOGI(TAG, "Entering light sleep for %lu ms", sleep_ms);
+    esp_sleep_enable_timer_wakeup(sleep_ms * 1000);
+    esp_light_sleep_start();
+    ESP_LOGI(TAG, "Woke up from light sleep");
 }
