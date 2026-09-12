@@ -2,9 +2,10 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
+#include "esp_ota_ops.h"
 #include "driver/gpio.h"
 #include "nvs_flash.h"
-#include "web_ota.h"
+#include "ble_device_service.h"
 #include "adc_monitor.h"
 #include "E22-400t22s.h"
 
@@ -82,10 +83,10 @@ static void __attribute__((unused)) e22_tx_demo_task(void *pvParameter)
 void app_main(void)
 {
     ESP_LOGI(TAG, "==================================================");
-    ESP_LOGI(TAG, "ESP32-C6 boot successful! Web OTA enabled.");
+    ESP_LOGI(TAG, "ESP32-C6 boot successful! BLE maintenance transport enabled.");
     ESP_LOGI(TAG, "==================================================");
 
-    // 1. 初始化 NVS (WiFi 和 OTA 标志位强依赖 NVS)
+    // 1. 初始化 NVS（BLE PHY、后续配对信息和设备参数依赖 NVS）
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
@@ -103,48 +104,25 @@ void app_main(void)
     // 4. 初始化 ADC 电压监测
     adc_monitor_init();
 
-    // 5. 启动 WiFi STA 与 OTA Web 服务器
-    start_web_ota();
-
-    // 6. 初始化 E22-400T22S UART LoRa 模块。无线模块故障不应拖垮主系统。
+    // 5. 初始化 E22-400T22S。模块故障不应拖垮主系统和 BLE 诊断。
     esp_err_t e22_err = e22_init();
     bool e22_ready = e22_err == ESP_OK;
     if (!e22_ready) {
         ESP_LOGE(TAG,
-                 "E22 initialization failed: %s; keeping system and OTA online "
+                 "E22 initialization failed: %s; keeping system and BLE online "
                  "for diagnostics",
                  esp_err_to_name(e22_err));
     }
 
-    // 7. 创建 LoRa 收发演示任务 (可根据需要启用)
-    // xTaskCreate(e22_rx_demo_task, "e22_rx_demo", 4096, NULL, 5, NULL);
-    // xTaskCreate(e22_tx_demo_task, "e22_tx_demo", 4096, NULL, 5, NULL);
+    // 6. BLE 管理服务：设备信息、状态、参数、E22 诊断和 OTA。
+    ESP_ERROR_CHECK(ble_device_service_start(e22_ready));
 
-    if (!e22_ready) {
-        ESP_LOGW(TAG, "Skipping E22 sleep/wakeup test because initialization failed");
-        return;
-    }
-
-    vTaskDelay(pdMS_TO_TICKS(20000));
-    for (int i = 0; i < 1000; i++){
-        ESP_ERROR_CHECK(e22_sleep(0));
-        vTaskDelay(pdMS_TO_TICKS(5000));
-        esp_light_sleep(5000);
-        vTaskDelay(pdMS_TO_TICKS(5000));
-        ESP_ERROR_CHECK(e22_wakeup());
-        vTaskDelay(pdMS_TO_TICKS(5000));
-
-        ESP_LOGI(TAG, "Woke up from light sleep %d, sending test packets...", i);
-        for (int j = 0; j < 5; j++) {
-            uint8_t pkt[16];
-            int len = snprintf((char *)pkt, sizeof(pkt), "TEST_%d_%d", i, j);
-            if (e22_send(pkt, (size_t)len, pdMS_TO_TICKS(2000)) == ESP_OK) {
-                ESP_LOGI(TAG, "TX ok: %s", pkt);
-            } else {
-                ESP_LOGW(TAG, "TX fail: %s", pkt);
-            }
-            vTaskDelay(pdMS_TO_TICKS(3000));
+    // OTA 新镜像只有在关键服务均启动后才确认；E22 自检失败时保留回滚机会。
+    if (e22_ready) {
+        esp_err_t confirm_err = esp_ota_mark_app_valid_cancel_rollback();
+        if (confirm_err != ESP_OK && confirm_err != ESP_ERR_NOT_SUPPORTED) {
+            ESP_LOGW(TAG, "OTA image confirmation skipped: %s",
+                     esp_err_to_name(confirm_err));
         }
-        ESP_LOGI(TAG, "Test packets done, going to sleep again");
     }
 }
