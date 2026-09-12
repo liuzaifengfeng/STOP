@@ -129,10 +129,22 @@ void app_main(void)
     for (int i = 0; i < 1000; i++){
         ESP_ERROR_CHECK(e22_sleep(0));
         vTaskDelay(pdMS_TO_TICKS(5000));
-        esp_light_sleep(1000 * 60 * 60 * 1);
-        vTaskDelay(pdMS_TO_TICKS(100));
+        esp_light_sleep(5000);
+        vTaskDelay(pdMS_TO_TICKS(5000));
         ESP_ERROR_CHECK(e22_wakeup());
-        ESP_LOGI(TAG, "Woke up from light sleep %d", i);
-        vTaskDelay(pdMS_TO_TICKS(60000));
+        vTaskDelay(pdMS_TO_TICKS(5000));
+
+        ESP_LOGI(TAG, "Woke up from light sleep %d, sending test packets...", i);
+        for (int j = 0; j < 5; j++) {
+            uint8_t pkt[16];
+            int len = snprintf((char *)pkt, sizeof(pkt), "TEST_%d_%d", i, j);
+            if (e22_send(pkt, (size_t)len, pdMS_TO_TICKS(2000)) == ESP_OK) {
+                ESP_LOGI(TAG, "TX ok: %s", pkt);
+            } else {
+                ESP_LOGW(TAG, "TX fail: %s", pkt);
+            }
+            vTaskDelay(pdMS_TO_TICKS(3000));
+        }
+        ESP_LOGI(TAG, "Test packets done, going to sleep again");
     }
 }
