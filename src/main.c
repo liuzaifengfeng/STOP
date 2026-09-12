@@ -6,7 +6,7 @@
 #include "nvs_flash.h"
 #include "web_ota.h"
 #include "adc_monitor.h"
-#include "E22-400m22s.h"
+#include "E22-400t22s.h"
 
 #define BLINK_GPIO GPIO_NUM_22 // GPIO_NUM_22 is the BUZZER pin
 
@@ -40,42 +40,38 @@ static void blink_task(void *pvParameter)
 }
 
 // LoRa 接收演示任务 (从 E22 接收队列读取数据)
-static void lora_rx_demo_task(void *pvParameter)
+static void __attribute__((unused)) e22_rx_demo_task(void *pvParameter)
 {
-    ESP_LOGI(TAG, "LoRa RX demo task started");
-    QueueHandle_t rxq = e22_get_rx_queue();
+    (void)pvParameter;
+    ESP_LOGI(TAG, "E22 RX demo task started");
 
     while (1) {
-        lora_rx_msg_t msg;
+        e22_rx_msg_t msg;
         // 阻塞等待接收数据 (1 秒超时)
-        if (pdTRUE == xQueueReceive(rxq, &msg, pdMS_TO_TICKS(1000))) {
-            ESP_LOGI(TAG, "LoRa RX [%d bytes] RSSI=%d SNR=%d: %.*s",
-                     msg.len, msg.rssi, msg.snr,
-                     msg.len, msg.data);
+        if (e22_receive(&msg, pdMS_TO_TICKS(1000)) == ESP_OK) {
+            ESP_LOGI(TAG, "E22 RX [%u bytes]: %.*s", msg.len, msg.len, msg.data);
         }
     }
 }
 
 // LoRa 发送演示任务 (定时广播心跳)
-static void lora_tx_demo_task(void *pvParameter)
+static void __attribute__((unused)) e22_tx_demo_task(void *pvParameter)
 {
-    ESP_LOGI(TAG, "LoRa TX demo task started");
-    QueueHandle_t txq = e22_get_tx_queue();
+    (void)pvParameter;
+    ESP_LOGI(TAG, "E22 TX demo task started");
     uint32_t seq = 0;
 
     // 等待系统稳定
     vTaskDelay(pdMS_TO_TICKS(5000));
 
     while (1) {
-        lora_tx_msg_t msg;
-        snprintf((char *)msg.data, sizeof(msg.data),
-                 "HEARTBEAT seq=%lu", ++seq);
-        msg.len = strlen((char *)msg.data);
+        uint8_t data[E22_MAX_PAYLOAD_LEN];
+        int len = snprintf((char *)data, sizeof(data), "HEARTBEAT seq=%lu", ++seq);
 
-        if (pdTRUE == xQueueSend(txq, &msg, pdMS_TO_TICKS(100))) {
-            ESP_LOGI(TAG, "LoRa TX queued: %s", msg.data);
+        if (len > 0 && e22_send(data, (size_t)len, pdMS_TO_TICKS(1000)) == ESP_OK) {
+            ESP_LOGI(TAG, "E22 TX accepted: %s", data);
         } else {
-            ESP_LOGW(TAG, "LoRa TX queue full");
+            ESP_LOGW(TAG, "E22 TX failed");
         }
 
         // 每 30 秒广播一次
@@ -110,20 +106,32 @@ void app_main(void)
     // 5. 启动 WiFi STA 与 OTA Web 服务器
     start_web_ota();
 
-    // 6. 初始化 E22-400M22S LoRa 模块
-    e22_init();
+    // 6. 初始化 E22-400T22S UART LoRa 模块。无线模块故障不应拖垮主系统。
+    esp_err_t e22_err = e22_init();
+    bool e22_ready = e22_err == ESP_OK;
+    if (!e22_ready) {
+        ESP_LOGE(TAG,
+                 "E22 initialization failed: %s; keeping system and OTA online "
+                 "for diagnostics",
+                 esp_err_to_name(e22_err));
+    }
 
     // 7. 创建 LoRa 收发演示任务 (可根据需要启用)
-    //xTaskCreate(lora_rx_demo_task, "lora_rx_demo", 4096, NULL, 5, NULL);
-    //xTaskCreate(lora_tx_demo_task, "lora_tx_demo", 4096, NULL, 5, NULL);
+    // xTaskCreate(e22_rx_demo_task, "e22_rx_demo", 4096, NULL, 5, NULL);
+    // xTaskCreate(e22_tx_demo_task, "e22_tx_demo", 4096, NULL, 5, NULL);
+
+    if (!e22_ready) {
+        ESP_LOGW(TAG, "Skipping E22 sleep/wakeup test because initialization failed");
+        return;
+    }
 
     vTaskDelay(pdMS_TO_TICKS(20000));
     for (int i = 0; i < 1000; i++){
-        e22_sleep(0);
+        ESP_ERROR_CHECK(e22_sleep(0));
         vTaskDelay(pdMS_TO_TICKS(5000));
         esp_light_sleep(1000 * 60 * 60 * 1);
         vTaskDelay(pdMS_TO_TICKS(100));
-        e22_wakeup();
+        ESP_ERROR_CHECK(e22_wakeup());
         ESP_LOGI(TAG, "Woke up from light sleep %d", i);
         vTaskDelay(pdMS_TO_TICKS(60000));
     }
