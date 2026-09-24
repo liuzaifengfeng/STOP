@@ -1,8 +1,18 @@
-.pio
-.vscode/.browse.c_cpp.db*
-.vscode/c_cpp_properties.json
-.vscode/launch.json
-.vscode/ipch
-web/node_modules/
-web/dist/
-web/*.tsbuildinfo
+# PlatformIO 构建缓存与 VS Code 自动生成文件
+**/.pio/
+**/.vscode/.browse.c_cpp.db*
+**/.vscode/c_cpp_properties.json
+**/.vscode/launch.json
+**/.vscode/ipch/
+
+# Web 前端依赖与构建产物
+**/node_modules/
+**/dist/
+**/*.tsbuildinfo
+
+# 操作系统临时文件
+.DS_Store
+Thumbs.db
+
+# 本机 AI 工具的个人配置
+**/.claude/settings.local.json
