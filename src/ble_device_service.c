@@ -25,6 +25,8 @@
 #define CAP_BLE_OTA              (1UL << 2)
 #define CAP_OTA_SHA256           (1UL << 3)
 #define CAP_OTA_SIGNED           (1UL << 4)
+#define CAP_OTA_RESULT           (1UL << 5)
+#define CAP_LINK_RSSI            (1UL << 6)
 
 static const char *TAG = "BLE_SERVICE";
 static bool s_radio_ready;
@@ -89,7 +91,7 @@ static uint16_t encode_device_info(uint8_t *output, size_t capacity)
     }
     output[0] = STOP_PROTOCOL_VERSION;
     uint32_t capabilities = CAP_CONFIG | CAP_RADIO_DIAGNOSTIC | CAP_BLE_OTA |
-                            CAP_OTA_SHA256;
+                            CAP_OTA_SHA256 | CAP_OTA_RESULT | CAP_LINK_RSSI;
 #if CONFIG_SECURE_BOOT
     capabilities |= CAP_OTA_SIGNED;
 #endif
@@ -106,7 +108,7 @@ static uint16_t encode_device_info(uint8_t *output, size_t capacity)
 
 static uint16_t encode_device_status(uint8_t *output, size_t capacity)
 {
-    if (capacity < 20U) {
+    if (capacity < 21U) {
         return 0U;
     }
     BatteryInfo battery = {0};
@@ -133,7 +135,12 @@ static uint16_t encode_device_status(uint8_t *output, size_t capacity)
     stop_write_le16(output + 13, (uint16_t)ota.last_error);
     stop_write_le32(output + 15, ota.expected_offset);
     output[19] = 0U; /* Safety state unavailable until safety_manager exists. */
-    return 20U;
+    int8_t rssi = 127;
+    if (ble_transport_get_rssi(&rssi) != ESP_OK) {
+        rssi = 127;
+    }
+    output[20] = (uint8_t)rssi;
+    return 21U;
 }
 
 static void publish_status(void)
@@ -341,6 +348,17 @@ static void handle_control(const stop_frame_view_t *frame)
         stop_error_t err = ota_service_abort(frame->payload, frame->payload_len);
         send_ota_status(frame->request_id, true, false, err);
         publish_status();
+        break;
+    }
+    case STOP_MSG_OTA_RESULT: {
+        if (frame->payload_len != 0U) {
+            send_error(frame->request_id, STOP_ERROR_INVALID_ARGUMENT, false);
+            break;
+        }
+        uint8_t payload[43];
+        size_t len = ota_service_encode_result(payload, sizeof(payload));
+        send_response(STOP_MSG_OTA_RESULT, frame->request_id, payload,
+                      (uint16_t)len);
         break;
     }
     default:

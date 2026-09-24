@@ -117,6 +117,7 @@ CRC 用于发现随机传输和实现错误，不等于安全认证。后续安�
 | `0x33` | `OTA_END` | CONTROL | 已实现 |
 | `0x34` | `OTA_ABORT` | CONTROL | 已实现 |
 | `0x35` | `OTA_STATUS` | BULK_ACK / EVENT | 已实现 |
+| `0x36` | `OTA_RESULT` | CONTROL | 已实现（跨重启结果查询） |
 | `0x40` | `LOG_EVENT` | EVENT | 预留业务实现 |
 | `0x7F` | `ERROR` | EVENT / RESPONSE | 预留业务实现 |
 
@@ -148,7 +149,7 @@ firmware_version UTF-8[version_length]
 bluetooth_mac    byte[6]
 ```
 
-能力位：bit0 基础参数、bit1 E22 诊断、bit2 BLE OTA、bit3 SHA-256、bit4 已启用设备端签名验证。当前普通开发构建不会设置 bit4。
+能力位：bit0 基础参数、bit1 E22 诊断、bit2 BLE OTA、bit3 SHA-256、bit4 已启用设备端签名验证、bit5 支持跨重启 OTA 结果查询、bit6 支持连接 RSSI。当前普通开发构建不会设置 bit4。
 
 ### 7.2 异步事件
 
@@ -227,9 +228,27 @@ accepted_chunk_size uint16
 reboot_pending      uint8
 ```
 
+### 8.5 OTA_RESULT
+
+客户端在设备重启并重新连接后发送无负载的 `OTA_RESULT (0x36)` 请求。设备返回固定 43 字节：
+
+```text
+result_state        uint8     0=无记录，1=等待运行确认，2=成功，3=失败或回滚
+last_error          uint16
+transfer_id         uint32
+image_size          uint32
+image_sha256        32 bytes
+```
+
+设备仅在完整固件通过块 CRC、整包 SHA-256、ESP 镜像与产品/版本检查后，才将 `transfer_id`、镜像大小、SHA-256、目标分区和“等待运行确认”状态写入 NVS。新固件启动后，只有 NVS、ADC、E22 和 BLE 等关键服务启动成功且 OTA 回滚确认完成，才把记录改为“成功”。若后续启动回到非目标分区，设备把该记录改为“失败或回滚”。
+
+网页必须在开始传输时把本次 `transfer_id`、镜像大小和 SHA-256 保存在本地。重连查询时三者必须全部相符，才能把设备记录判定为本次网页发起的升级结果；不得仅凭版本号或进度达到 100% 宣告成功。结果为成功或失败后，网页应提示用户并清除本地等待记录及 100% 进度状态。
+
+从不支持 `OTA_RESULT` 的旧固件首次升级到支持该功能的版本时，旧固件无法提前写入交接记录。网页可在新固件报告目标版本已经运行后清除等待界面，但必须明确提示“首次迁移无法完成跨重启 SHA-256 确认”，不得把它显示为已验证成功。
+
 状态值依次为 `IDLE=0`、`PREPARING=1`、`RECEIVING=2`、`VERIFYING=3`、`READY_TO_REBOOT=4`、`FAILED=5`、`ABORTED=6`。
 
-## 8.5 基础参数协议
+## 8.6 基础参数协议
 
 参数采用 TLV 列表。列表首字节为条目数，每个条目为：
 
@@ -250,9 +269,9 @@ value  byte[length]
 
 `device_alias` 是业务层显示名称；为保持扫描与配对行为稳定，它不会动态修改 GATT GAP 广播名 `STOP-C6`。
 
-### 8.6 设备状态与 E22 诊断
+### 8.7 设备状态与 E22 诊断
 
-`DEVICE_STATUS_EVENT` 负载固定 20 字节：
+`DEVICE_STATUS_EVENT` 基础负载为 20 字节；支持能力位 bit6 的设备扩展为 21 字节。客户端必须接受尾部扩展字段：
 
 | 偏移 | 字段 | 类型 |
 |---:|---|---|
@@ -267,8 +286,11 @@ value  byte[length]
 | 13 | `ota_last_error` | uint16 |
 | 15 | `ota_expected_offset` | uint32 |
 | 19 | `safety_state` | uint8 |
+| 20 | `ble_rssi_dbm` | int8，控制器暂时无法测量时为 127 |
 
 安全状态在 `safety_manager` 实现前固定为 0，不得解释为允许供电。
+
+RSSI 只表示 C6 接收网页端信号的瞬时强弱，不等同于链路质量。网页的链路质量评分综合最近 50 次应用层请求的响应/超时情况、平均往返延迟和 RSSI；样本不足时显示“采样中”。BLE 链路层会自动重传，当前控制器接口未向应用提供逐包重传计数，因此页面所示失败率是应用层 ACK 超时/失败率，不得标称为真实射频丢包率。网页空闲时可每 5 秒探测一次，OTA 和其他操作期间应暂停额外探测。
 
 `RADIO_SEND` 负载为 `data_length uint16 + data`，长度不得超过 235 字节；成功响应返回实际发送长度。`RADIO_RX_EVENT` 使用相同负载格式。该通道只用于诊断报文，未来安全接收端必须在协议层将其与急停安全报文隔离。
 
@@ -351,7 +373,7 @@ detail        UTF-8, optional
 - 设备信息、电池/E22/OTA 状态读取和周期通知。
 - 三项基础参数的范围验证、NVS 持久化和完整结果回读。
 - E22 诊断收发桥接。
-- OTA 备用分区写入、分块确认、偏移查询、块 CRC、整包 SHA-256、ESP 镜像校验、启动分区切换和回滚确认。
+- OTA 备用分区写入、分块确认、偏移查询、块 CRC、纯软件增量 SHA-256、ESP 镜像校验、启动分区切换、回滚确认，以及通过 NVS 保存并跨重启查询升级结果。软件 SHA 避免特定 ESP32-C6/ESP-IDF 组合的硬件 SHA DMA 上下文异常。
 
 当前阶段仍未实现：
 

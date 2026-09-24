@@ -32,6 +32,21 @@ typedef struct {
     bool reboot_pending;
 } ota_service_status_t;
 
+typedef enum {
+    OTA_RESULT_NONE = 0,
+    OTA_RESULT_AWAITING_CONFIRMATION = 1,
+    OTA_RESULT_CONFIRMED = 2,
+    OTA_RESULT_FAILED = 3,
+} ota_result_state_t;
+
+typedef struct {
+    ota_result_state_t state;
+    stop_error_t last_error;
+    uint32_t transfer_id;
+    uint32_t image_size;
+    uint8_t image_sha256[32];
+} ota_service_result_t;
+
 void ota_service_init(void);
 stop_error_t ota_service_begin(const uint8_t *payload, size_t payload_len,
                                uint16_t link_max_chunk);
@@ -40,6 +55,8 @@ stop_error_t ota_service_end(const uint8_t *payload, size_t payload_len);
 stop_error_t ota_service_abort(const uint8_t *payload, size_t payload_len);
 void ota_service_get_status(ota_service_status_t *status);
 size_t ota_service_encode_status(uint8_t *output, size_t capacity);
+size_t ota_service_encode_result(uint8_t *output, size_t capacity);
+void ota_service_mark_running_image_confirmed(void);
 bool ota_service_is_active(void);
 
 #endif

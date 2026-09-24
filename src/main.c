@@ -8,6 +8,7 @@
 #include "ble_device_service.h"
 #include "adc_monitor.h"
 #include "E22-400t22s.h"
+#include "ota_service.h"
 
 #define BLINK_GPIO GPIO_NUM_22 // GPIO_NUM_22 is the BUZZER pin
 
@@ -82,9 +83,9 @@ static void __attribute__((unused)) e22_tx_demo_task(void *pvParameter)
 
 void app_main(void)
 {
-    ESP_LOGI(TAG, "==================================================");
-    ESP_LOGI(TAG, "ESP32-C6 boot successful! BLE maintenance transport enabled.");
-    ESP_LOGI(TAG, "==================================================");
+    ESP_LOGI(TAG, "============================================================");
+    ESP_LOGI(TAG, "ESP32-C6 boot successful!  BLE maintenance transport enabled.");
+    ESP_LOGI(TAG, "============================================================");
 
     // 1. 初始化 NVS（BLE PHY、后续配对信息和设备参数依赖 NVS）
     esp_err_t ret = nvs_flash_init();
@@ -120,7 +121,9 @@ void app_main(void)
     // OTA 新镜像只有在关键服务均启动后才确认；E22 自检失败时保留回滚机会。
     if (e22_ready) {
         esp_err_t confirm_err = esp_ota_mark_app_valid_cancel_rollback();
-        if (confirm_err != ESP_OK && confirm_err != ESP_ERR_NOT_SUPPORTED) {
+        if (confirm_err == ESP_OK || confirm_err == ESP_ERR_NOT_SUPPORTED) {
+            ota_service_mark_running_image_confirmed();
+        } else {
             ESP_LOGW(TAG, "OTA image confirmation skipped: %s",
                      esp_err_to_name(confirm_err));
         }

@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
@@ -65,6 +66,8 @@ static uint16_t s_bulk_ack_handle;
 
 static uint16_t s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
 static uint16_t s_att_mtu = BLE_TRANSPORT_DEFAULT_MTU;
+static int8_t s_last_rssi = 127;
+static int64_t s_last_rssi_time_us;
 static uint8_t s_own_addr_type;
 static bool s_event_subscribed;
 static bool s_status_subscribed;
@@ -241,6 +244,8 @@ static int ble_transport_gap_event(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_CONNECT:
         if (event->connect.status == 0) {
             s_conn_handle = event->connect.conn_handle;
+            s_last_rssi = 127;
+            s_last_rssi_time_us = 0;
             uint16_t negotiated_mtu = ble_att_mtu(s_conn_handle);
             s_att_mtu = negotiated_mtu >= BLE_TRANSPORT_DEFAULT_MTU
                             ? negotiated_mtu
@@ -258,6 +263,8 @@ static int ble_transport_gap_event(struct ble_gap_event *event, void *arg)
         ESP_LOGI(TAG, "Maintenance client disconnected; reason=%d",
                  event->disconnect.reason);
         s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
+        s_last_rssi = 127;
+        s_last_rssi_time_us = 0;
         s_att_mtu = BLE_TRANSPORT_DEFAULT_MTU;
         s_event_subscribed = false;
         s_status_subscribed = false;
@@ -446,4 +453,29 @@ bool ble_transport_is_connected(void)
 uint16_t ble_transport_get_mtu(void)
 {
     return s_att_mtu;
+}
+
+esp_err_t ble_transport_get_rssi(int8_t *rssi)
+{
+    if (rssi == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    uint16_t conn_handle = s_conn_handle;
+    if (conn_handle == BLE_HS_CONN_HANDLE_NONE) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    int64_t now = esp_timer_get_time();
+    if (s_last_rssi != 127 && now - s_last_rssi_time_us < 2000000LL) {
+        *rssi = s_last_rssi;
+        return ESP_OK;
+    }
+    int8_t value = 127;
+    int rc = ble_gap_conn_rssi(conn_handle, &value);
+    if (rc != 0 || value == 127) {
+        return nimble_rc_to_esp_err(rc != 0 ? rc : BLE_HS_EUNKNOWN);
+    }
+    s_last_rssi = value;
+    s_last_rssi_time_us = now;
+    *rssi = value;
+    return ESP_OK;
 }

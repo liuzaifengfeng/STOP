@@ -55,6 +55,9 @@ bool ble_transport_is_connected(void);
 /** Return the most recently negotiated ATT MTU, or 23 before negotiation. */
 uint16_t ble_transport_get_mtu(void);
 
+/** Read the current connection RSSI in dBm. */
+esp_err_t ble_transport_get_rssi(int8_t *rssi);
+
 #ifdef __cplusplus
 }
 #endif

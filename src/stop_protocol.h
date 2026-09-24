@@ -38,6 +38,7 @@ typedef enum {
     STOP_MSG_OTA_END = 0x33,
     STOP_MSG_OTA_ABORT = 0x34,
     STOP_MSG_OTA_STATUS = 0x35,
+    STOP_MSG_OTA_RESULT = 0x36,
     STOP_MSG_LOG_EVENT = 0x40,
     STOP_MSG_ERROR = 0x7f,
 } stop_message_type_t;
