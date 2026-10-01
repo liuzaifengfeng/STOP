@@ -18,6 +18,33 @@ static adc_cali_handle_t cali_handle;
 // 电池信息缓存 (由 adc_monitor_task 更新, 外部通过 get_battery_info 读取)
 static int g_voltage_mv = 0;
 static int g_soc = 0;
+static portMUX_TYPE battery_lock = portMUX_INITIALIZER_UNLOCKED;
+
+/* GPIO0 经过 1:2 分压；必须先把 ADC 原始码转换为毫伏。 */
+static int sample_battery_mv(int count)
+{
+    int sum_mv = 0;
+    for (int i = 0; i < count; ++i) {
+        int raw = 0, pin_mv = 0;
+        ESP_ERROR_CHECK(adc_oneshot_read(adc_handle, ADC_CHAN, &raw));
+        if (cali_handle)
+            ESP_ERROR_CHECK(adc_cali_raw_to_voltage(cali_handle, raw, &pin_mv));
+        else
+            pin_mv = raw * 3300 / 4095;
+        sum_mv += pin_mv;
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    return sum_mv * 2 / count;
+}
+
+static void cache_battery(int mv)
+{
+    int soc = get_battery_soc(mv);
+    portENTER_CRITICAL(&battery_lock);
+    g_voltage_mv = mv;
+    g_soc = soc;
+    portEXIT_CRITICAL(&battery_lock);
+}
 
 // 定义电压和电量的映射点
 typedef struct {
@@ -71,31 +98,15 @@ static void adc_monitor_task(void *pvParameter) {
 
     // 周期性监测
     while (1) {
-    // 采样 3 次取平均
-    int adc_sum = 0;
-    for (int i = 0; i < 50; i++) {
-        int raw;
-        ESP_ERROR_CHECK(adc_oneshot_read(adc_handle, ADC_CHAN, &raw));
-        adc_sum += raw;
-
-        int voltage_mv = 0;
-        if (cali_handle) {
-            ESP_ERROR_CHECK(adc_cali_raw_to_voltage(cali_handle, raw, &voltage_mv));
-        } else {
-            voltage_mv = raw * 3300 / 4095;
-        }
-        //ESP_LOGI(TAG, "Boot sample[%d]: raw=%d, voltage=%d mV", i, raw, voltage_mv);
-        vTaskDelay(pdMS_TO_TICKS(100));
-    }
-    int V_bat = adc_sum / 50 * 2;//电阻分压，实际电压为 adc_avg * 2V
+    // 每轮 10 次校准电压取平均，约每秒更新一次，避免低压保护延迟。
+    int V_bat = sample_battery_mv(10);
     int soc = get_battery_soc(V_bat);
 
     // 更新全局缓存
-    g_voltage_mv = V_bat;
-    g_soc = soc;
+    cache_battery(V_bat);
 
-    ESP_LOGI(TAG, "battery voltage: %d mV, soc: %d%%", V_bat, soc);
-    vTaskDelay(pdMS_TO_TICKS(50000));
+    //ESP_LOGI(TAG, "battery voltage: %d mV, soc: %d%%", V_bat, soc);
+    vTaskDelay(pdMS_TO_TICKS(900));
     }
 }
 
@@ -127,27 +138,22 @@ void adc_monitor_init(void) {
     }
 
     // 启动前先同步采样一次，确保页面刷新时能立即获取到电池数据
-    int boot_sum = 0;
-    for (int i = 0; i < 10; i++) {
-        int raw;
-        ESP_ERROR_CHECK(adc_oneshot_read(adc_handle, ADC_CHAN, &raw));
-        boot_sum += raw;
-        vTaskDelay(pdMS_TO_TICKS(10));
-    }
-    int boot_v = boot_sum / 10 * 2;
-    g_voltage_mv = boot_v;
-    g_soc = get_battery_soc(boot_v);
+    int boot_v = sample_battery_mv(10);
+    cache_battery(boot_v);
     ESP_LOGI(TAG, "Initial battery: %d mV, soc: %d%%", boot_v, g_soc);
 
     // 创建监测任务
-    xTaskCreate(adc_monitor_task, "adc_monitor", 4096, NULL, 5, NULL);
+    ESP_ERROR_CHECK(xTaskCreate(adc_monitor_task, "adc_monitor", 4096, NULL, 5, NULL)
+                    == pdPASS ? ESP_OK : ESP_ERR_NO_MEM);
     ESP_LOGI(TAG, "ADC monitor task started");
 }
 
 bool get_battery_info(BatteryInfo *info) {
     if (!info) return false;
+    portENTER_CRITICAL(&battery_lock);
     info->voltage_v = g_voltage_mv / 1000.0f;
     info->soc = g_soc;
+    portEXIT_CRITICAL(&battery_lock);
     return true;
 }
 

@@ -60,6 +60,40 @@ __VLS_asFunctionalElement1(__VLS_intrinsics.input)({
     step: "100",
 });
 (__VLS_ctx.tool.config.radioTxTimeoutMs);
+if (__VLS_ctx.tool.config.radioLink !== undefined) {
+    __VLS_asFunctionalElement1(__VLS_intrinsics.label, __VLS_intrinsics.label)({});
+    __VLS_asFunctionalElement1(__VLS_intrinsics.select, __VLS_intrinsics.select)({
+        value: (__VLS_ctx.tool.config.radioLink),
+    });
+    __VLS_asFunctionalElement1(__VLS_intrinsics.option, __VLS_intrinsics.option)({
+        value: (0),
+    });
+    __VLS_asFunctionalElement1(__VLS_intrinsics.option, __VLS_intrinsics.option)({
+        value: (1),
+    });
+    __VLS_asFunctionalElement1(__VLS_intrinsics.option, __VLS_intrinsics.option)({
+        value: (2),
+    });
+    __VLS_asFunctionalElement1(__VLS_intrinsics.label, __VLS_intrinsics.label)({});
+    __VLS_asFunctionalElement1(__VLS_intrinsics.input)({
+        type: "number",
+        min: "1",
+        max: "11",
+        step: "1",
+    });
+    (__VLS_ctx.tool.config.espnowChannel);
+    __VLS_asFunctionalElement1(__VLS_intrinsics.p, __VLS_intrinsics.p)({
+        ...{ class: "section-description" },
+    });
+    /** @type {__VLS_StyleScopedClasses['section-description']} */ ;
+    (__VLS_ctx.tool.status.value?.radioMode === 6 ? 'E22 + ESP-NOW 双通道' : __VLS_ctx.tool.status.value?.radioMode === 5 ? 'ESP-NOW' : 'E22');
+}
+else {
+    __VLS_asFunctionalElement1(__VLS_intrinsics.p, __VLS_intrinsics.p)({
+        ...{ class: "section-description" },
+    });
+    /** @type {__VLS_StyleScopedClasses['section-description']} */ ;
+}
 __VLS_asFunctionalElement1(__VLS_intrinsics.button, __VLS_intrinsics.button)({
     ...{ onClick: (__VLS_ctx.tool.saveConfig) },
     ...{ class: "button primary wide" },
@@ -70,7 +104,7 @@ __VLS_asFunctionalElement1(__VLS_intrinsics.button, __VLS_intrinsics.button)({
 /** @type {__VLS_StyleScopedClasses['wide']} */ ;
 (__VLS_ctx.preferences.t('saveDevice'));
 // @ts-ignore
-[preferences, preferences, preferences, preferences, preferences, preferences, tool, tool, tool, tool, tool, tool,];
+[preferences, preferences, preferences, preferences, preferences, preferences, tool, tool, tool, tool, tool, tool, tool, tool, tool, tool, tool,];
 const __VLS_export = (await import('vue')).defineComponent({
     __typeProps: {},
 });

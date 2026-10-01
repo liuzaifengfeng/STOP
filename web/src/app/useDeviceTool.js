@@ -1,9 +1,11 @@
 import { computed, onUnmounted, reactive, ref } from 'vue';
 import { StopDeviceClient, } from '../device-client';
 import { bytesText, bytesToHex, Capability, FrameFlag, hexToBytes, MessageType, parseDeviceStatus, textBytes, } from '../protocol';
-const OTA_PENDING_KEY = 'stop-c6.pending-ota.v1';
-const client = new StopDeviceClient();
-export function useDeviceTool() {
+export function useDeviceTool(role) {
+    const client = new StopDeviceClient(role === 'controller' ? 'STOP-C6' : 'STOP-C6-RX');
+    const expectedProductId = role === 'controller' ? 1 : 2;
+    const expectedProject = role === 'controller' ? 'STOP_TX' : 'STOP_RX';
+    const otaPendingKey = () => `stop-c6.pending-ota.v2.${role}.${info.value?.bluetoothMac ?? 'unknown'}`;
     const activePage = ref('dashboard');
     const connected = ref(false);
     const busy = ref(false);
@@ -17,15 +19,18 @@ export function useDeviceTool() {
     const firmware = ref();
     const firmwareName = ref('');
     const firmwareVersion = ref('');
+    const firmwareProject = ref('');
     const firmwareUrl = ref('');
     const ota = reactive({ sent: 0, total: 0, percent: 0, state: 0 });
     const linkMetrics = ref(client.getLinkMetrics());
     let linkProbeTimer;
+    let linkProbeRunning = false;
     const unsubscribe = client.onFrame((frame) => {
         linkMetrics.value = client.getLinkMetrics();
         if (frame.type === MessageType.Error && frame.payload.length === 0) {
             stopLinkProbe();
             connected.value = false;
+            status.value = undefined;
             notice.value = '设备已断开';
             return;
         }
@@ -34,8 +39,11 @@ export function useDeviceTool() {
         }
         if (frame.type === MessageType.RadioRxEvent && (frame.flags & FrameFlag.Event) && frame.payload.length >= 2) {
             const length = new DataView(frame.payload.buffer, frame.payload.byteOffset).getUint16(0, true);
+            if (2 + length > frame.payload.length)
+                return;
             const data = frame.payload.subarray(2, 2 + length);
             radioLog.value.unshift({ time: new Date().toLocaleTimeString(), direction: 'RX', value: `${bytesToHex(data)}  ·  ${safeText(data)}` });
+            radioLog.value.length = Math.min(radioLog.value.length, 100);
         }
     });
     onUnmounted(() => {
@@ -89,41 +97,50 @@ export function useDeviceTool() {
     }
     async function connect() {
         await run('连接设备', async () => {
-            await client.connect();
-            connected.value = true;
-            const results = await Promise.allSettled([client.getInfo(), client.getStatus(), client.getConfig()]);
-            if (results[0].status === 'fulfilled')
-                info.value = results[0].value;
-            if (results[1].status === 'fulfilled')
-                status.value = results[1].value;
-            if (results[2].status === 'fulfilled')
-                Object.assign(config, results[2].value);
-            const failures = results.filter((result) => result.status === 'rejected');
-            if (failures.length)
-                throw new Error(`设备已连接，但有 ${failures.length} 项初始化读取失败`);
-            if (info.value && (info.value.capabilities & Capability.OtaResult) !== 0)
-                await reconcileOtaResult(await client.getOtaResult());
-            linkMetrics.value = client.getLinkMetrics();
-            startLinkProbe();
+            info.value = undefined;
+            status.value = undefined;
+            try {
+                await client.connect();
+                connected.value = true;
+                info.value = await client.getInfo();
+                if (info.value.productId !== expectedProductId) {
+                    throw new Error(`设备产品编号 ${info.value.productId} 与当前${role === 'controller' ? '控制端' : '被控端'}位置不符`);
+                }
+                status.value = await client.getStatus();
+                Object.assign(config, await client.getConfig());
+                if (info.value && (info.value.capabilities & Capability.OtaResult) !== 0)
+                    await reconcileOtaResult(await client.getOtaResult());
+                linkMetrics.value = client.getLinkMetrics();
+                startLinkProbe();
+            }
+            catch (error) {
+                client.disconnect();
+                connected.value = false;
+                status.value = undefined;
+                throw error;
+            }
         });
     }
     function disconnect() {
         stopLinkProbe();
         client.disconnect();
         connected.value = false;
+        status.value = undefined;
         notice.value = '已主动断开';
     }
     function startLinkProbe() {
         stopLinkProbe();
         linkProbeTimer = window.setInterval(async () => {
-            if (!connected.value || busy.value)
+            if (!connected.value || busy.value || linkProbeRunning)
                 return;
+            linkProbeRunning = true;
             try {
                 status.value = await client.getStatus();
             }
             catch { /* 请求统计由客户端记录。 */ }
             finally {
                 linkMetrics.value = client.getLinkMetrics();
+                linkProbeRunning = false;
             }
         }, 5000);
     }
@@ -136,17 +153,93 @@ export function useDeviceTool() {
         const value = await run('刷新状态', () => client.getStatus());
         if (value)
             status.value = value;
+        return value !== undefined;
+    }
+    async function debugOutput(enable) {
+        if (role !== 'receiver' || !connected.value) {
+            notice.value = '请先连接被控端';
+            return false;
+        }
+        const result = await run(enable ? '临时调试使能' : '断开输出', async () => {
+            await client.debugOutput(enable);
+            return true;
+        });
+        if (!result) {
+            const failure = notice.value;
+            await refresh();
+            notice.value = failure + '；旧固件请先升级，安全拒绝请查看本页条件提示及串口电源日志';
+            return false;
+        }
+        if (!await refresh()) {
+            notice.value = '命令已应答，但状态读回失败，请检查实际输出';
+            return false;
+        }
+        const on = Boolean((status.value?.pairFlags ?? 0) & 16);
+        notice.value = on === enable ? (on ? '实际输出已接通' : '实际输出已断开') : '实际输出与请求不一致，检查串口安全日志';
+        return on === enable;
+    }
+    async function startPairing() {
+        if (role !== 'receiver' || !connected.value) {
+            notice.value = '请先连接被控端';
+            return false;
+        }
+        if (!await refresh())
+            return false;
+        if (status.value?.safetyState === 3) {
+            notice.value = '被控端输出已接通，不能进入配对模式';
+            return false;
+        }
+        const result = await run('开启 30 秒配对窗口', async () => { await client.startPairing(); return true; });
+        if (!result)
+            return false;
+        await refresh();
+        return true;
+    }
+    async function startRadioListen() {
+        if (role !== 'controller' || !connected.value) {
+            notice.value = '请先连接控制端';
+            return false;
+        }
+        return (await run('开启控制端 10 秒接收窗口', async () => {
+            await client.startRadioListen();
+            return true;
+        })) === true;
     }
     async function saveConfig() {
-        const value = await run('保存参数', () => client.setConfig({ ...config }));
-        if (value)
+        const value = await run('保存并回读参数', async () => {
+            const requested = { ...config };
+            await client.setConfig(requested);
+            const actual = await client.getConfig();
+            for (const key of Object.keys(requested)) {
+                if (actual[key] !== requested[key])
+                    throw new Error('参数回读不一致，请重新读取设备配置');
+            }
+            return actual;
+        });
+        if (value) {
             Object.assign(config, value);
+            notice.value = value.radioLink === undefined ? '参数已保存并回读确认' : '参数已保存并回读确认；无线模式和信道在设备重启后生效，请配置两端后分别重新上电';
+        }
     }
     async function sendRadio() {
-        const data = radioMode.value === 'hex' ? hexToBytes(radioInput.value) : textBytes(radioInput.value);
-        const sent = await run('发送 E22 诊断包', () => client.radioSend(data));
+        let data;
+        try {
+            data = radioMode.value === 'hex' ? hexToBytes(radioInput.value) : textBytes(radioInput.value);
+        }
+        catch (error) {
+            notice.value = error instanceof Error ? error.message : String(error);
+            return false;
+        }
+        const sent = await run('发送无线诊断包', () => client.radioSend(data));
+        if (sent !== undefined)
+            radioLog.value.unshift({ time: new Date().toLocaleTimeString(), direction: 'TX', value: `${bytesToHex(data)}  ·  ${safeText(data)}` });
+        return sent !== undefined;
+    }
+    async function sendDiagnostic(data) {
+        const sent = await run('发送联调测试包', () => client.radioSend(data));
         if (sent)
             radioLog.value.unshift({ time: new Date().toLocaleTimeString(), direction: 'TX', value: `${bytesToHex(data)}  ·  ${safeText(data)}` });
+        return sent !== undefined;
     }
     function safeText(data) {
         const value = bytesText(data);
@@ -168,10 +261,11 @@ export function useDeviceTool() {
             setFirmware(value, firmwareUrl.value.split('/').pop() || 'cloud-firmware.bin');
     }
     function setFirmware(image, name) {
-        firmware.value = image;
+        firmware.value = undefined;
         firmwareName.value = name;
-        ota.total = image.length;
-        if (image.length < 80) {
+        firmwareVersion.value = '';
+        firmwareProject.value = '';
+        if (image.length < 112) {
             notice.value = '固件文件太短，无法读取 ESP 应用描述';
             return;
         }
@@ -181,8 +275,17 @@ export function useDeviceTool() {
             return;
         }
         const versionBytes = image.subarray(48, 80);
+        const projectBytes = image.subarray(80, 112);
         const end = versionBytes.indexOf(0);
+        const projectEnd = projectBytes.indexOf(0);
         firmwareVersion.value = bytesText(end >= 0 ? versionBytes.subarray(0, end) : versionBytes).trim();
+        firmwareProject.value = bytesText(projectEnd >= 0 ? projectBytes.subarray(0, projectEnd) : projectBytes).trim();
+        if (firmwareProject.value !== expectedProject) {
+            notice.value = `固件项目 ${firmwareProject.value || '未知'} 不属于当前${role === 'controller' ? '控制端' : '被控端'}（应为 ${expectedProject}）`;
+            return;
+        }
+        firmware.value = image;
+        ota.total = image.length;
         notice.value = `已读取固件版本 ${firmwareVersion.value}`;
     }
     async function startOta() {
@@ -190,27 +293,35 @@ export function useDeviceTool() {
             notice.value = '请先选择或下载固件';
             return;
         }
+        if (!info.value || info.value.productId !== expectedProductId || firmwareProject.value !== expectedProject) {
+            notice.value = '设备身份或固件项目不匹配，已拒绝升级';
+            return;
+        }
+        if (role === 'receiver' && status.value?.safetyState === 3) {
+            notice.value = '被控端输出已接通，请先在硬件上断开输出后再升级';
+            return;
+        }
         Object.assign(ota, { sent: 0, percent: 0, state: 1 });
         busy.value = true;
         notice.value = '执行 BLE OTA';
         try {
-            const attempt = await client.otaUpdate(firmware.value, firmwareVersion.value, (progress) => Object.assign(ota, progress), (prepared) => savePendingOta({ ...prepared, awaitingReboot: false }));
+            const attempt = await client.otaUpdate(firmware.value, firmwareVersion.value, info.value.productId, info.value.hardwareRevision, (progress) => Object.assign(ota, progress), (prepared) => savePendingOta({ ...prepared, awaitingReboot: false }));
             savePendingOta({ ...attempt, awaitingReboot: true });
             notice.value = '固件写入完成，请等待设备重启后重新连接以确认结果';
         }
         catch (error) {
             if (ota.state !== 4)
-                localStorage.removeItem(OTA_PENDING_KEY);
+                localStorage.removeItem(otaPendingKey());
             notice.value = error instanceof Error ? error.message : String(error);
         }
         finally {
             busy.value = false;
         }
     }
-    function savePendingOta(value) { localStorage.setItem(OTA_PENDING_KEY, JSON.stringify(value)); }
+    function savePendingOta(value) { localStorage.setItem(otaPendingKey(), JSON.stringify(value)); }
     function loadPendingOta() {
         try {
-            const value = JSON.parse(localStorage.getItem(OTA_PENDING_KEY) ?? 'null');
+            const value = JSON.parse(localStorage.getItem(otaPendingKey()) ?? 'null');
             if (!value || typeof value.transferId !== 'number' || typeof value.imageSize !== 'number' || typeof value.sha256 !== 'string' || typeof value.version !== 'string')
                 return undefined;
             return value;
@@ -225,7 +336,7 @@ export function useDeviceTool() {
             return;
         if (result.state === 0 && pending.awaitingReboot && info.value?.firmwareVersion === pending.version) {
             window.alert(`设备已运行目标版本 ${pending.version}\n首次迁移无法完成跨重启 SHA-256 确认，后续升级将自动确认。`);
-            localStorage.removeItem(OTA_PENDING_KEY);
+            localStorage.removeItem(otaPendingKey());
             Object.assign(ota, { sent: 0, total: 0, percent: 0, state: 0 });
             return;
         }
@@ -234,21 +345,21 @@ export function useDeviceTool() {
         const shortHash = result.sha256.slice(0, 12);
         if (result.state === 2) {
             window.alert(`OTA 升级成功\n版本：${pending.version}\nSHA-256：${shortHash}…`);
-            localStorage.removeItem(OTA_PENDING_KEY);
+            localStorage.removeItem(otaPendingKey());
             Object.assign(ota, { sent: 0, total: 0, percent: 0, state: 0 });
         }
         else if (result.state === 3) {
             window.alert(`OTA 升级失败或已回滚\n错误码：0x${result.error.toString(16).padStart(4, '0')}\nSHA-256：${shortHash}…`);
-            localStorage.removeItem(OTA_PENDING_KEY);
+            localStorage.removeItem(otaPendingKey());
             Object.assign(ota, { sent: 0, total: pending.imageSize, percent: 0, state: 5 });
         }
         else if (result.state === 1)
             notice.value = '新固件已经启动，但关键服务运行确认尚未完成';
     }
     return {
-        activePage, connected, busy, notice, info, status, config, radioMode, radioInput, radioLog,
-        firmware, firmwareName, firmwareVersion, firmwareUrl, ota, batteryText, signalStrength,
+        role, expectedProject, activePage, connected, busy, notice, info, status, config, radioMode, radioInput, radioLog,
+        firmware, firmwareName, firmwareVersion, firmwareProject, firmwareUrl, ota, batteryText, signalStrength,
         linkQuality, otaStateText, deviceName: computed(() => client.name), connect, disconnect,
-        refresh, saveConfig, sendRadio, chooseFirmware, loadFirmwareUrl, startOta,
+        refresh, debugOutput, startPairing, startRadioListen, saveConfig, sendRadio, sendDiagnostic, chooseFirmware, loadFirmwareUrl, startOta,
     };
 }

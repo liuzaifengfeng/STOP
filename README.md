@@ -6,14 +6,14 @@
 
 ```text
 STOP_wireless/
-├─ STOP/       PlatformIO 嵌入式固件
+├─ STOP/       控制端 PlatformIO 固件
 ├─ web/        Web 前端
-└─ Assused/    硬件设计和辅助资料
+└─ Assused/    被控端 Beta PlatformIO 固件与硬件资料
 ```
 
 ## 固件项目
 
-使用 VS Code 打开本仓库后，通过 PlatformIO 打开或编译 `STOP/platformio.ini`。
+使用 VS Code 打开本仓库后，通过 PlatformIO 分别打开或编译控制端 `STOP/platformio.ini`、被控端 `Assused/platformio.ini`。被控端引脚、配对与上电步骤见 [Assused/README.md](Assused/README.md)。
 
 也可以在终端中运行：
 
@@ -23,6 +23,8 @@ platformio run
 ```
 
 ## Web 项目
+
+固件现支持在网页“设备配置”选择 **E22、ESP-NOW 或双通道**，模式与 ESP-NOW 信道保存后重启生效。使用步骤、双通道语义和实测项目见 [ESP-NOW 说明](STOP/Document/ESPNOW.md)。
 
 首次使用时安装依赖：
 

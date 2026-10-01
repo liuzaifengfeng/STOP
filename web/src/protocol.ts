@@ -14,9 +14,12 @@ export enum MessageType {
   ConfigGet = 0x10,
   ConfigSet = 0x11,
   ConfigResult = 0x12,
+  PairModeStart = 0x13,
+  DebugOutput = 0x14,
   RadioSend = 0x20,
   RadioSendResult = 0x21,
   RadioRxEvent = 0x22,
+  RadioListenStart = 0x23,
   OtaBegin = 0x30,
   OtaData = 0x31,
   OtaQuery = 0x32,
@@ -70,6 +73,13 @@ export interface DeviceStatus {
   otaOffset: number
   safetyState: number
   rssi: number | null
+  receiverCurrentMa: number | null
+  receiverVinMv: number | null
+  receiverVinDisabled: boolean
+  receiverInaValid: boolean
+  receiverOverCurrent: boolean
+  pairFlags: number | null
+  peerMac: string | null
 }
 
 const decoder = new TextDecoder()
@@ -147,11 +157,22 @@ export function parseDeviceInfo(payload: Uint8Array): DeviceInfo {
 export function parseDeviceStatus(payload: Uint8Array): DeviceStatus {
   if (payload.length < 20) throw new Error('设备状态长度错误')
   const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength)
+  const receiverPayload = payload.length === 26 || payload.length >= 33
+  const pairOffset = payload.length >= 33 ? 26 : payload.length === 28 ? 21 : -1
+  const peer = pairOffset >= 0 ? payload.subarray(pairOffset + 1, pairOffset + 7) : undefined
   return {
     uptimeSeconds: view.getUint32(0, true), batteryMv: view.getUint16(4, true), batterySoc: payload[6] === 255 ? null : payload[6],
     radioReady: payload[7] !== 0, radioMode: payload[8], bleConnected: payload[9] !== 0, mtu: view.getUint16(10, true),
     otaState: payload[12], otaError: view.getUint16(13, true), otaOffset: view.getUint32(15, true), safetyState: payload[19],
     rssi: payload.length >= 21 && payload[20] !== 127 ? view.getInt8(20) : null,
+    receiverCurrentMa: receiverPayload ? view.getInt16(21, true) : null,
+    receiverInaValid: receiverPayload && (payload[23] & 1) !== 0,
+    receiverOverCurrent: receiverPayload && (payload[23] & 2) !== 0,
+    receiverVinDisabled: receiverPayload && (payload[23] & 4) !== 0,
+    receiverVinMv: receiverPayload && !(payload[23] & 4) ? view.getUint16(24, true) : null,
+    pairFlags: pairOffset >= 0 ? payload[pairOffset] : null,
+    peerMac: peer && peer.some((value) => value !== 0)
+      ? [...peer].map((value) => value.toString(16).padStart(2, '0')).join(':') : null,
   }
 }
 

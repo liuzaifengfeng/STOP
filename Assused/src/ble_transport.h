@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-#define BLE_TRANSPORT_DEVICE_NAME       "STOP-C6"
+#define BLE_TRANSPORT_DEVICE_NAME       "STOP-C6-RX"
 #define BLE_TRANSPORT_MAX_FRAME_LEN     512U
 #define BLE_TRANSPORT_MAX_STATUS_LEN    256U
 

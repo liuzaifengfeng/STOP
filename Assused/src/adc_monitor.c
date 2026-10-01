@@ -84,7 +84,7 @@ static void adc_monitor_task(void *pvParameter) {
         } else {
             voltage_mv = raw * 3300 / 4095;
         }
-        //ESP_LOGI(TAG, "Boot sample[%d]: raw=%d, voltage=%d mV", i, raw, voltage_mv);
+        ESP_LOGI(TAG, "Boot sample[%d]: raw=%d, voltage=%d mV", i, raw, voltage_mv);
         vTaskDelay(pdMS_TO_TICKS(100));
     }
     int V_bat = adc_sum / 50 * 2;//电阻分压，实际电压为 adc_avg * 2V

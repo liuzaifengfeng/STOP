@@ -8,6 +8,7 @@
 #include "esp_ota_ops.h"
 #include "nvs.h"
 #include "sha256_sw.h"
+#include "controller_safety.h"
 
 #define OTA_MIN_BATTERY_SOC 20
 #define OTA_RESULT_NAMESPACE "ota_result"
@@ -213,6 +214,7 @@ stop_error_t ota_service_begin(const uint8_t *payload, size_t payload_len,
     memcpy(s_ota.expected_version, payload + 15U, version_len);
     s_ota.expected_version[version_len] = '\0';
 
+    controller_safety_set_maintenance(true);
     esp_err_t err = esp_ota_begin(partition, image_size, &s_ota.handle);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_ota_begin failed: %s", esp_err_to_name(err));
@@ -350,6 +352,7 @@ stop_error_t ota_service_abort(const uint8_t *payload, size_t payload_len)
     close_handle(false);
     s_ota.status.state = OTA_SERVICE_ABORTED;
     s_ota.status.last_error = STOP_ERROR_OK;
+    controller_safety_set_maintenance(false);
     return STOP_ERROR_OK;
 }
 

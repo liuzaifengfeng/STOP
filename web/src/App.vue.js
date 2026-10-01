@@ -1,22 +1,30 @@
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
 import { useDeviceTool } from './app/useDeviceTool';
 import DashboardView from './features/dashboard/DashboardView.vue';
+import PairingView from './features/pairing/PairingView.vue';
 import ConfigurationView from './features/configuration/ConfigurationView.vue';
 import RadioView from './features/radio/RadioView.vue';
 import FirmwareView from './features/firmware/FirmwareView.vue';
 import SettingsView from './features/settings/SettingsView.vue';
+import InstructionsView from './features/instructions/InstructionsView.vue';
 import { usePreferences } from './app/usePreferences';
-const tool = useDeviceTool();
+const controllerTool = useDeviceTool('controller');
+const receiverTool = useDeviceTool('receiver');
+const selectedRole = ref('controller');
+const activePage = ref('dashboard');
+const tool = computed(() => selectedRole.value === 'controller' ? controllerTool : receiverTool);
 const preferences = usePreferences();
 const pages = computed(() => [
     { id: 'dashboard', icon: '⌂', label: preferences.t('dashboard'), caption: preferences.t('dashboardCaption') },
+    { id: 'pairing', icon: '⇄', label: preferences.t('pairing'), caption: preferences.t('pairingCaption') },
     { id: 'configuration', icon: '⚙', label: preferences.t('configuration'), caption: preferences.t('configurationCaption') },
     { id: 'radio', icon: '⌁', label: preferences.t('radio'), caption: preferences.t('radioCaption') },
     { id: 'firmware', icon: '⇧', label: preferences.t('firmware'), caption: preferences.t('firmwareCaption') },
+    { id: 'instructions', icon: '?', label: preferences.t('instructions'), caption: preferences.t('instructionsCaption') },
     { id: 'settings', icon: '●', label: preferences.t('settings'), caption: preferences.t('settingsCaption') },
 ]);
-const pageTitle = computed(() => pages.value.find((page) => page.id === tool.activePage.value)?.label ?? preferences.t('dashboard'));
-const pageComponent = computed(() => ({ dashboard: DashboardView, configuration: ConfigurationView, radio: RadioView, firmware: FirmwareView, settings: SettingsView })[tool.activePage.value]);
+const pageTitle = computed(() => pages.value.find((page) => page.id === activePage.value)?.label ?? preferences.t('dashboard'));
+const pageComponent = computed(() => ({ dashboard: DashboardView, pairing: PairingView, configuration: ConfigurationView, radio: RadioView, firmware: FirmwareView, instructions: InstructionsView, settings: SettingsView })[activePage.value]);
 const __VLS_ctx = {
     ...{},
     ...{},
@@ -51,12 +59,14 @@ __VLS_asFunctionalElement1(__VLS_intrinsics.nav, __VLS_intrinsics.nav)({
 for (const [page] of __VLS_vFor((__VLS_ctx.pages))) {
     __VLS_asFunctionalElement1(__VLS_intrinsics.button, __VLS_intrinsics.button)({
         ...{ onClick: (...[$event]) => {
-                return (__VLS_ctx.tool.activePage.value = page.id);
+                return (__VLS_ctx.activePage = page.id);
                 // @ts-ignore
-                [preferences, preferences, pages, tool,];
+                [preferences, preferences, pages, activePage,];
             } },
         key: (page.id),
-        ...{ class: ({ active: __VLS_ctx.tool.activePage.value === page.id }) },
+        title: (page.label),
+        'aria-label': (page.label),
+        ...{ class: ({ active: __VLS_ctx.activePage === page.id }) },
     });
     /** @type {__VLS_StyleScopedClasses['active']} */ ;
     __VLS_asFunctionalElement1(__VLS_intrinsics.span, __VLS_intrinsics.span)({
@@ -73,7 +83,7 @@ for (const [page] of __VLS_vFor((__VLS_ctx.pages))) {
     __VLS_asFunctionalElement1(__VLS_intrinsics.small, __VLS_intrinsics.small)({});
     (page.caption);
     // @ts-ignore
-    [tool,];
+    [activePage,];
 }
 __VLS_asFunctionalElement1(__VLS_intrinsics.div, __VLS_intrinsics.div)({
     ...{ class: "sidebar-foot" },
@@ -84,15 +94,27 @@ __VLS_asFunctionalElement1(__VLS_intrinsics.div, __VLS_intrinsics.div)({
 });
 /** @type {__VLS_StyleScopedClasses['device-mini']} */ ;
 __VLS_asFunctionalElement1(__VLS_intrinsics.span)({
-    ...{ class: (['status-light', { online: __VLS_ctx.tool.connected.value }]) },
+    ...{ class: (['status-light', { online: __VLS_ctx.controllerTool.connected.value }]) },
 });
 /** @type {__VLS_StyleScopedClasses['online']} */ ;
 /** @type {__VLS_StyleScopedClasses['status-light']} */ ;
 __VLS_asFunctionalElement1(__VLS_intrinsics.div, __VLS_intrinsics.div)({});
 __VLS_asFunctionalElement1(__VLS_intrinsics.b, __VLS_intrinsics.b)({});
-(__VLS_ctx.tool.connected.value ? __VLS_ctx.tool.deviceName.value : __VLS_ctx.preferences.t('noDevice'));
 __VLS_asFunctionalElement1(__VLS_intrinsics.small, __VLS_intrinsics.small)({});
-(__VLS_ctx.tool.connected.value ? __VLS_ctx.preferences.t('bleConnected') : __VLS_ctx.preferences.t('waitingConnection'));
+(__VLS_ctx.controllerTool.connected.value ? __VLS_ctx.controllerTool.deviceName.value : __VLS_ctx.preferences.t('waitingConnection'));
+__VLS_asFunctionalElement1(__VLS_intrinsics.div, __VLS_intrinsics.div)({
+    ...{ class: "device-mini" },
+});
+/** @type {__VLS_StyleScopedClasses['device-mini']} */ ;
+__VLS_asFunctionalElement1(__VLS_intrinsics.span)({
+    ...{ class: (['status-light', { online: __VLS_ctx.receiverTool.connected.value }]) },
+});
+/** @type {__VLS_StyleScopedClasses['online']} */ ;
+/** @type {__VLS_StyleScopedClasses['status-light']} */ ;
+__VLS_asFunctionalElement1(__VLS_intrinsics.div, __VLS_intrinsics.div)({});
+__VLS_asFunctionalElement1(__VLS_intrinsics.b, __VLS_intrinsics.b)({});
+__VLS_asFunctionalElement1(__VLS_intrinsics.small, __VLS_intrinsics.small)({});
+(__VLS_ctx.receiverTool.connected.value ? __VLS_ctx.receiverTool.deviceName.value : __VLS_ctx.preferences.t('waitingConnection'));
 __VLS_asFunctionalElement1(__VLS_intrinsics.p, __VLS_intrinsics.p)({});
 (__VLS_ctx.preferences.t('maintenancePlane'));
 __VLS_asFunctionalElement1(__VLS_intrinsics.br)({});
@@ -110,6 +132,7 @@ __VLS_asFunctionalElement1(__VLS_intrinsics.span, __VLS_intrinsics.span)({
     ...{ class: "eyebrow" },
 });
 /** @type {__VLS_StyleScopedClasses['eyebrow']} */ ;
+(__VLS_ctx.selectedRole === 'controller' ? 'CONTROL' : 'RECEIVER');
 __VLS_asFunctionalElement1(__VLS_intrinsics.h1, __VLS_intrinsics.h1)({});
 (__VLS_ctx.pageTitle);
 __VLS_asFunctionalElement1(__VLS_intrinsics.div, __VLS_intrinsics.div)({
@@ -129,23 +152,56 @@ if (__VLS_ctx.tool.connected.value) {
     /** @type {__VLS_StyleScopedClasses['signal-pill']} */ ;
     (__VLS_ctx.preferences.t('quality'));
     (__VLS_ctx.tool.linkQuality.value.score ?? '—');
-    __VLS_asFunctionalElement1(__VLS_intrinsics.button, __VLS_intrinsics.button)({
-        ...{ onClick: (__VLS_ctx.tool.disconnect) },
-        ...{ class: "button secondary" },
-    });
-    /** @type {__VLS_StyleScopedClasses['button']} */ ;
-    /** @type {__VLS_StyleScopedClasses['secondary']} */ ;
-    (__VLS_ctx.preferences.t('disconnect'));
 }
-else {
-    __VLS_asFunctionalElement1(__VLS_intrinsics.button, __VLS_intrinsics.button)({
-        ...{ onClick: (__VLS_ctx.tool.connect) },
-        ...{ class: "button primary" },
-        disabled: (__VLS_ctx.tool.busy.value),
+__VLS_asFunctionalElement1(__VLS_intrinsics.div, __VLS_intrinsics.div)({
+    ...{ class: "device-switcher" },
+});
+/** @type {__VLS_StyleScopedClasses['device-switcher']} */ ;
+for (const [entry] of __VLS_vFor(([{ role: 'controller', label: '控制端', session: __VLS_ctx.controllerTool }, { role: 'receiver', label: '被控端', session: __VLS_ctx.receiverTool }]))) {
+    __VLS_asFunctionalElement1(__VLS_intrinsics.div, __VLS_intrinsics.div)({
+        ...{ onClick: (...[$event]) => {
+                return (__VLS_ctx.selectedRole = entry.role);
+                // @ts-ignore
+                [preferences, preferences, preferences, preferences, preferences, controllerTool, controllerTool, controllerTool, controllerTool, receiverTool, receiverTool, receiverTool, receiverTool, selectedRole, selectedRole, pageTitle, tool, tool, tool, tool, tool, tool, tool,];
+            } },
+        key: (entry.role),
+        ...{ class: (['device-slot', { selected: __VLS_ctx.selectedRole === entry.role }]) },
     });
-    /** @type {__VLS_StyleScopedClasses['button']} */ ;
-    /** @type {__VLS_StyleScopedClasses['primary']} */ ;
-    (__VLS_ctx.preferences.t('connect'));
+    /** @type {__VLS_StyleScopedClasses['selected']} */ ;
+    /** @type {__VLS_StyleScopedClasses['device-slot']} */ ;
+    __VLS_asFunctionalElement1(__VLS_intrinsics.span)({
+        ...{ class: (['status-light', { online: entry.session.connected.value }]) },
+    });
+    /** @type {__VLS_StyleScopedClasses['online']} */ ;
+    /** @type {__VLS_StyleScopedClasses['status-light']} */ ;
+    __VLS_asFunctionalElement1(__VLS_intrinsics.div, __VLS_intrinsics.div)({});
+    __VLS_asFunctionalElement1(__VLS_intrinsics.b, __VLS_intrinsics.b)({});
+    (entry.label);
+    __VLS_asFunctionalElement1(__VLS_intrinsics.small, __VLS_intrinsics.small)({});
+    (entry.session.info.value?.bluetoothMac ?? entry.session.deviceName.value);
+    __VLS_asFunctionalElement1(__VLS_intrinsics.small, __VLS_intrinsics.small)({});
+    (entry.session.notice.value);
+    if (entry.session.connected.value) {
+        __VLS_asFunctionalElement1(__VLS_intrinsics.button, __VLS_intrinsics.button)({
+            ...{ onClick: (entry.session.disconnect) },
+            ...{ class: "button secondary" },
+        });
+        /** @type {__VLS_StyleScopedClasses['button']} */ ;
+        /** @type {__VLS_StyleScopedClasses['secondary']} */ ;
+        (__VLS_ctx.preferences.t('disconnect'));
+    }
+    else {
+        __VLS_asFunctionalElement1(__VLS_intrinsics.button, __VLS_intrinsics.button)({
+            ...{ onClick: (entry.session.connect) },
+            ...{ class: "button primary" },
+            disabled: (entry.session.busy.value),
+        });
+        /** @type {__VLS_StyleScopedClasses['button']} */ ;
+        /** @type {__VLS_StyleScopedClasses['primary']} */ ;
+        (__VLS_ctx.preferences.t('connect'));
+    }
+    // @ts-ignore
+    [preferences, preferences, selectedRole,];
 }
 __VLS_asFunctionalElement1(__VLS_intrinsics.div, __VLS_intrinsics.div)({
     ...{ class: "safety-strip" },
@@ -173,11 +229,15 @@ const __VLS_0 = (__VLS_ctx.pageComponent);
 // @ts-ignore
 const __VLS_1 = __VLS_asFunctionalComponent1(__VLS_0, new __VLS_0({
     tool: (__VLS_ctx.tool),
+    controller: (__VLS_ctx.controllerTool),
+    receiver: (__VLS_ctx.receiverTool),
 }));
 const __VLS_2 = __VLS_1({
     tool: (__VLS_ctx.tool),
+    controller: (__VLS_ctx.controllerTool),
+    receiver: (__VLS_ctx.receiverTool),
 }, ...__VLS_functionalComponentArgsRest(__VLS_1));
 // @ts-ignore
-[preferences, preferences, preferences, preferences, preferences, preferences, preferences, preferences, preferences, preferences, tool, tool, tool, tool, tool, tool, tool, tool, tool, tool, tool, tool, tool, tool, tool, tool, tool, pageTitle, pageComponent,];
+[preferences, preferences, controllerTool, receiverTool, tool, tool, tool, pageComponent,];
 const __VLS_export = (await import('vue')).defineComponent({});
 export default {};

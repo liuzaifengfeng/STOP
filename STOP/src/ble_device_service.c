@@ -2,7 +2,7 @@
 
 #include <string.h>
 
-#include "E22-400t22s.h"
+#include "radio_transport.h"
 #include "adc_monitor.h"
 #include "ble_transport.h"
 #include "device_config.h"
@@ -15,6 +15,7 @@
 #include "freertos/task.h"
 #include "ota_service.h"
 #include "stop_protocol.h"
+#include "controller_safety.h"
 
 #define SERVICE_TASK_STACK       4096U
 #define SERVICE_TASK_PRIORITY    5U
@@ -108,7 +109,7 @@ static uint16_t encode_device_info(uint8_t *output, size_t capacity)
 
 static uint16_t encode_device_status(uint8_t *output, size_t capacity)
 {
-    if (capacity < 21U) {
+    if (capacity < 28U) {
         return 0U;
     }
     BatteryInfo battery = {0};
@@ -128,7 +129,7 @@ static uint16_t encode_device_status(uint8_t *output, size_t capacity)
                     ? (uint8_t)battery.soc
                     : 0xffU;
     output[7] = s_radio_ready ? 1U : 0U;
-    output[8] = (uint8_t)e22_get_mode();
+    output[8] = radio_transport_mode();
     output[9] = ble_transport_is_connected() ? 1U : 0U;
     stop_write_le16(output + 10, ble_transport_get_mtu());
     output[12] = (uint8_t)ota.state;
@@ -140,7 +141,8 @@ static uint16_t encode_device_status(uint8_t *output, size_t capacity)
         rssi = 127;
     }
     output[20] = (uint8_t)rssi;
-    return 21U;
+    output[21] = controller_safety_pair_status(output + 22);
+    return 28U;
 }
 
 static void publish_status(void)
@@ -228,14 +230,18 @@ static void handle_radio_send(const stop_frame_view_t *frame)
         return;
     }
     uint16_t data_len = stop_read_le16(frame->payload);
-    if (data_len == 0U || data_len > E22_MAX_PAYLOAD_LEN ||
+    if (data_len == 0U || data_len > RADIO_MAX_PAYLOAD_LEN ||
         frame->payload_len != data_len + 2U) {
         send_error(frame->request_id, STOP_ERROR_INVALID_ARGUMENT, false);
         return;
     }
+    if (data_len >= 2U && frame->payload[2] == 'S' && frame->payload[3] == 'R') {
+        send_error(frame->request_id, STOP_ERROR_SAFETY_LOCKOUT, false);
+        return;
+    }
     device_config_t config;
     device_config_get(&config);
-    esp_err_t err = e22_send(frame->payload + 2, data_len,
+    esp_err_t err = radio_transport_send(frame->payload + 2, data_len,
                              pdMS_TO_TICKS(config.radio_tx_timeout_ms));
     if (err != ESP_OK) {
         send_error(frame->request_id,
@@ -243,6 +249,10 @@ static void handle_radio_send(const stop_frame_view_t *frame)
                    false);
         return;
     }
+    ESP_LOGI(TAG, "Diagnostic TX accepted: %u bytes, prefix=%02x %02x %02x %02x",
+             (unsigned)data_len, frame->payload[2], data_len > 1U ? frame->payload[3] : 0U,
+             data_len > 2U ? frame->payload[4] : 0U,
+             data_len > 3U ? frame->payload[5] : 0U);
     uint8_t response[2];
     stop_write_le16(response, data_len);
     send_response(STOP_MSG_RADIO_SEND_RESULT, frame->request_id,
@@ -312,6 +322,19 @@ static void handle_control(const stop_frame_view_t *frame)
     case STOP_MSG_RADIO_SEND:
         handle_radio_send(frame);
         break;
+    case STOP_MSG_RADIO_LISTEN_START: {
+        if (frame->payload_len != 0U) {
+            send_error(frame->request_id, STOP_ERROR_INVALID_ARGUMENT, false);
+            break;
+        }
+        if (!s_radio_ready || ota_service_is_active() ||
+            controller_safety_begin_receive_test() != ESP_OK) {
+            send_error(frame->request_id, STOP_ERROR_SAFETY_LOCKOUT, false);
+            break;
+        }
+        send_response(STOP_MSG_RADIO_LISTEN_START, frame->request_id, NULL, 0);
+        break;
+    }
     case STOP_MSG_OTA_BEGIN: {
         uint16_t mtu = ble_transport_get_mtu();
         /* ATT value = MTU-3; STOP frame + OTA_DATA fixed fields consume 34 bytes. */
@@ -407,19 +430,22 @@ static void radio_rx_task(void *arg)
 {
     (void)arg;
     while (true) {
-        e22_rx_msg_t message;
-        if (e22_receive(&message, portMAX_DELAY) != ESP_OK) {
+        radio_rx_msg_t message;
+        if (radio_transport_receive(&message, portMAX_DELAY) != ESP_OK) {
             continue;
         }
-        uint8_t payload[2U + E22_MAX_PAYLOAD_LEN];
+        if (controller_safety_on_radio(message.data, message.len)) continue;
+        ESP_LOGI(TAG, "Diagnostic RX: %u bytes, prefix=%02x %02x %02x %02x",
+                 (unsigned)message.len, message.data[0], message.len > 1U ? message.data[1] : 0U,
+                 message.len > 2U ? message.data[2] : 0U,
+                 message.len > 3U ? message.data[3] : 0U);
+        uint8_t payload[2U + RADIO_MAX_PAYLOAD_LEN];
         stop_write_le16(payload, message.len);
         memcpy(payload + 2, message.data, message.len);
         esp_err_t err = send_frame(false, STOP_MSG_RADIO_RX_EVENT, STOP_FLAG_EVENT,
                                    0, payload, (uint16_t)(message.len + 2U));
-        if (err != ESP_OK && err != ESP_ERR_INVALID_STATE &&
-            err != ESP_ERR_INVALID_SIZE) {
-            ESP_LOGW(TAG, "Radio RX event failed: %s", esp_err_to_name(err));
-        }
+        if (err == ESP_OK) ESP_LOGI(TAG, "Diagnostic RX forwarded to BLE");
+        else ESP_LOGW(TAG, "Diagnostic RX BLE event failed: %s", esp_err_to_name(err));
     }
 }
 

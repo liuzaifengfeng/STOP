@@ -8,7 +8,7 @@
 #include "esp_err.h"
 #include "stop_protocol.h"
 
-#define STOP_PRODUCT_ID_BUTTON_BOX 0x0001U
+#define STOP_PRODUCT_ID_RECEIVER_BOX 0x0002U
 #define STOP_HARDWARE_REVISION     0x0001U
 #define OTA_SERVICE_MAX_CHUNK      478U
 

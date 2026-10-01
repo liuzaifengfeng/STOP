@@ -1,5 +1,9 @@
 import { bytesText, crc32, decodeFrame, encodeFrame, FrameFlag, MessageType, parseDeviceInfo, parseDeviceStatus, textBytes, UUID, } from './protocol';
 export class StopDeviceClient {
+    advertisedName;
+    constructor(advertisedName) {
+        this.advertisedName = advertisedName;
+    }
     device;
     control;
     bulk;
@@ -25,7 +29,7 @@ export class StopDeviceClient {
     async connect() {
         if (!navigator.bluetooth)
             throw new Error('当前浏览器不支持 Web Bluetooth，请使用 Chrome 或 Edge');
-        this.device = await navigator.bluetooth.requestDevice({ filters: [{ namePrefix: 'STOP-C6' }], optionalServices: [UUID.service] });
+        this.device = await navigator.bluetooth.requestDevice({ filters: [{ name: this.advertisedName }], optionalServices: [UUID.service] });
         this.device.addEventListener('gattserverdisconnected', this.handleDisconnect);
         const server = await this.device.gatt?.connect();
         if (!server)
@@ -140,6 +144,11 @@ export class StopDeviceClient {
     }
     async getInfo() { return parseDeviceInfo((await this.request(MessageType.DeviceInfoGet)).payload); }
     async getStatus() { return parseDeviceStatus((await this.request(MessageType.DeviceStatusGet)).payload); }
+    async debugOutput(enable) {
+        await this.request(MessageType.DebugOutput, new Uint8Array([enable ? 1 : 0]));
+    }
+    async startPairing() { await this.request(MessageType.PairModeStart); }
+    async startRadioListen() { await this.request(MessageType.RadioListenStart); }
     async getOtaResult() {
         return parseOtaResult((await this.request(MessageType.OtaResult)).payload);
     }
@@ -149,10 +158,15 @@ export class StopDeviceClient {
     }
     async setConfig(config) {
         const alias = textBytes(config.alias);
-        const payload = new Uint8Array(1 + 5 + alias.length + 9 + 9);
+        const hasRadioConfig = config.radioLink !== undefined && config.espnowChannel !== undefined;
+        if (hasRadioConfig && (!Number.isInteger(config.radioLink) || config.radioLink < 0 || config.radioLink > 2 ||
+            !Number.isInteger(config.espnowChannel) || config.espnowChannel < 1 || config.espnowChannel > 11)) {
+            throw new Error('无线模式必须为 0～2，ESP-NOW 信道必须为 1～11 的整数');
+        }
+        const payload = new Uint8Array(1 + 5 + alias.length + 9 + 9 + (hasRadioConfig ? 18 : 0));
         const view = new DataView(payload.buffer);
         let offset = 0;
-        payload[offset++] = 3;
+        payload[offset++] = hasRadioConfig ? 5 : 3;
         view.setUint16(offset, 1, true);
         payload[offset + 2] = 3;
         view.setUint16(offset + 3, alias.length, true);
@@ -167,18 +181,30 @@ export class StopDeviceClient {
         payload[offset + 2] = 2;
         view.setUint16(offset + 3, 4, true);
         view.setUint32(offset + 5, config.radioTxTimeoutMs, true);
+        offset += 9;
+        if (hasRadioConfig) {
+            view.setUint16(offset, 4, true);
+            payload[offset + 2] = 2;
+            view.setUint16(offset + 3, 4, true);
+            view.setUint32(offset + 5, config.radioLink, true);
+            offset += 9;
+            view.setUint16(offset, 5, true);
+            payload[offset + 2] = 2;
+            view.setUint16(offset + 3, 4, true);
+            view.setUint32(offset + 5, config.espnowChannel, true);
+        }
         return parseConfig((await this.request(MessageType.ConfigSet, payload)).payload);
     }
     async radioSend(data) {
         if (data.length === 0 || data.length > 235)
-            throw new Error('E22 数据长度必须为 1～235 字节');
+            throw new Error('无线数据长度必须为 1～235 字节');
         const payload = new Uint8Array(2 + data.length);
         new DataView(payload.buffer).setUint16(0, data.length, true);
         payload.set(data, 2);
         const response = await this.request(MessageType.RadioSend, payload);
         return new DataView(response.payload.buffer, response.payload.byteOffset).getUint16(0, true);
     }
-    async otaUpdate(image, version, onProgress, onAttempt) {
+    async otaUpdate(image, version, productId, hardwareRevision, onProgress, onAttempt) {
         if (!version || textBytes(version).length > 31)
             throw new Error('固件版本必须为 1～31 字节');
         const sha = new Uint8Array(await crypto.subtle.digest('SHA-256', image));
@@ -191,8 +217,8 @@ export class StopDeviceClient {
         beginView.setUint32(0, transferId, true);
         beginView.setUint32(4, image.length, true);
         beginView.setUint16(8, 478, true);
-        beginView.setUint16(10, 1, true);
-        beginView.setUint16(12, 1, true);
+        beginView.setUint16(10, productId, true);
+        beginView.setUint16(12, hardwareRevision, true);
         begin[14] = versionBytes.length;
         begin.set(versionBytes, 15);
         begin.set(sha, 15 + versionBytes.length);
@@ -226,7 +252,7 @@ export class StopDeviceClient {
 function parseConfig(payload) {
     if (payload.length < 1)
         throw new Error('参数响应为空');
-    const result = {};
+    const result = { radioLink: undefined, espnowChannel: undefined };
     const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
     let offset = 1;
     for (let index = 0; index < payload[0]; index += 1) {
@@ -242,8 +268,14 @@ function parseConfig(payload) {
             result.statusPeriodMs = view.getUint32(offset, true);
         else if (key === 3 && type === 2 && length === 4)
             result.radioTxTimeoutMs = view.getUint32(offset, true);
+        else if (key === 4 && type === 2 && length === 4)
+            result.radioLink = view.getUint32(offset, true);
+        else if (key === 5 && type === 2 && length === 4)
+            result.espnowChannel = view.getUint32(offset, true);
         offset += length;
     }
+    if (offset !== payload.length)
+        throw new Error('参数 TLV 存在多余数据');
     if (result.alias === undefined || result.statusPeriodMs === undefined || result.radioTxTimeoutMs === undefined)
         throw new Error('设备缺少必要参数');
     return result;

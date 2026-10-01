@@ -213,13 +213,22 @@ static void advertise(void)
     fields.name = (uint8_t *)BLE_TRANSPORT_DEVICE_NAME;
     fields.name_len = strlen(BLE_TRANSPORT_DEVICE_NAME);
     fields.name_is_complete = 1;
-    fields.uuids128 = (ble_uuid128_t *)&s_service_uuid;
-    fields.num_uuids128 = 1;
-    fields.uuids128_is_complete = 1;
 
     int rc = ble_gap_adv_set_fields(&fields);
     if (rc != 0) {
         ESP_LOGE(TAG, "Failed to set advertising data: rc=%d", rc);
+        return;
+    }
+
+    /* 名称 10 字节 + 128 位 UUID + Flags 会超过传统广播的 31 字节。
+     * 名称留在广播中供 Web Bluetooth 筛选，UUID 放到扫描响应中。 */
+    struct ble_hs_adv_fields scan_response = {0};
+    scan_response.uuids128 = (ble_uuid128_t *)&s_service_uuid;
+    scan_response.num_uuids128 = 1;
+    scan_response.uuids128_is_complete = 1;
+    rc = ble_gap_adv_rsp_set_fields(&scan_response);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "Failed to set scan response: rc=%d", rc);
         return;
     }
 
@@ -365,6 +374,7 @@ static esp_err_t send_notification(uint16_t attr_handle, bool subscribed,
     return nimble_rc_to_esp_err(
         ble_gatts_notify_custom(s_conn_handle, attr_handle, om));
 }
+
 
 esp_err_t ble_transport_start(ble_transport_rx_handler_t rx_handler,
                               void *context)

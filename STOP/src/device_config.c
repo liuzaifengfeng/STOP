@@ -22,7 +22,9 @@ static bool valid_config(const device_config_t *config)
     return alias_len > 0U && alias_len <= DEVICE_ALIAS_MAX_LEN &&
            config->status_period_ms >= 1000U && config->status_period_ms <= 60000U &&
            config->radio_tx_timeout_ms >= 100U &&
-           config->radio_tx_timeout_ms <= 5000U;
+           config->radio_tx_timeout_ms <= 5000U &&
+           config->radio_link <= 2U &&
+           config->espnow_channel >= 1U && config->espnow_channel <= 11U;
 }
 
 esp_err_t device_config_init(void)
@@ -39,6 +41,8 @@ esp_err_t device_config_init(void)
     memcpy(s_config.alias, DEFAULT_ALIAS, sizeof(DEFAULT_ALIAS));
     s_config.status_period_ms = DEFAULT_STATUS_PERIOD_MS;
     s_config.radio_tx_timeout_ms = DEFAULT_RADIO_TX_TIMEOUT_MS;
+    s_config.radio_link = 0;
+    s_config.espnow_channel = 6;
 
     nvs_handle_t handle;
     esp_err_t err = nvs_open(CONFIG_NAMESPACE, NVS_READONLY, &handle);
@@ -54,6 +58,8 @@ esp_err_t device_config_init(void)
     (void)nvs_get_str(handle, "alias", loaded.alias, &alias_capacity);
     (void)nvs_get_u32(handle, "status_ms", &loaded.status_period_ms);
     (void)nvs_get_u32(handle, "radio_ms", &loaded.radio_tx_timeout_ms);
+    (void)nvs_get_u32(handle, "radio_link", &loaded.radio_link);
+    (void)nvs_get_u32(handle, "now_channel", &loaded.espnow_channel);
     nvs_close(handle);
     if (valid_config(&loaded)) {
         s_config = loaded;
@@ -94,6 +100,12 @@ static esp_err_t parse_entry(device_config_t *candidate, uint16_t key,
             return ESP_ERR_INVALID_ARG;
         }
         candidate->radio_tx_timeout_ms = stop_read_le32(value);
+        return ESP_OK;
+    case DEVICE_CONFIG_RADIO_LINK:
+    case DEVICE_CONFIG_ESPNOW_CHANNEL:
+        if (type != DEVICE_CONFIG_TYPE_U32 || len != 4U) return ESP_ERR_INVALID_ARG;
+        if (key == DEVICE_CONFIG_RADIO_LINK) candidate->radio_link = stop_read_le32(value);
+        else candidate->espnow_channel = stop_read_le32(value);
         return ESP_OK;
     default:
         return ESP_ERR_NOT_SUPPORTED;
@@ -143,6 +155,8 @@ esp_err_t device_config_apply_tlv(const uint8_t *payload, size_t payload_len)
     if (err == ESP_OK) {
         err = nvs_set_u32(handle, "radio_ms", candidate.radio_tx_timeout_ms);
     }
+    if (err == ESP_OK) err = nvs_set_u32(handle, "radio_link", candidate.radio_link);
+    if (err == ESP_OK) err = nvs_set_u32(handle, "now_channel", candidate.espnow_channel);
     if (err == ESP_OK) {
         err = nvs_commit(handle);
     }
@@ -180,6 +194,13 @@ static esp_err_t append_entry(uint16_t key, const device_config_t *config,
         value = scalar;
         len = sizeof(scalar);
         break;
+    case DEVICE_CONFIG_RADIO_LINK:
+    case DEVICE_CONFIG_ESPNOW_CHANNEL:
+        type = DEVICE_CONFIG_TYPE_U32;
+        stop_write_le32(scalar, key == DEVICE_CONFIG_RADIO_LINK ? config->radio_link : config->espnow_channel);
+        value = scalar;
+        len = sizeof(scalar);
+        break;
     default:
         return ESP_ERR_NOT_SUPPORTED;
     }
@@ -203,7 +224,8 @@ esp_err_t device_config_encode_tlv(const uint8_t *requested_keys, size_t key_cou
         return ESP_ERR_INVALID_ARG;
     }
     const uint16_t all_keys[] = {DEVICE_CONFIG_ALIAS, DEVICE_CONFIG_STATUS_PERIOD_MS,
-                                 DEVICE_CONFIG_RADIO_TX_TIMEOUT_MS};
+                                 DEVICE_CONFIG_RADIO_TX_TIMEOUT_MS, DEVICE_CONFIG_RADIO_LINK,
+                                 DEVICE_CONFIG_ESPNOW_CHANNEL};
     device_config_t snapshot;
     device_config_get(&snapshot);
     size_t offset = 1U;

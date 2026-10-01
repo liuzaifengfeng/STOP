@@ -413,6 +413,7 @@ static void e22_rx_task(void *parameter)
 
         switch (event.type) {
         case UART_DATA: {
+            ESP_LOGI(TAG, "UART RX event: %u bytes", (unsigned)event.size);
             size_t remaining = event.size;
             while (remaining > 0) {
                 size_t requested = remaining < sizeof(buffer) ? remaining : sizeof(buffer);
@@ -590,6 +591,7 @@ esp_err_t e22_send(const uint8_t *data, size_t len, TickType_t timeout_ticks)
 
     err = wait_aux_high(remaining_ticks(start, timeout_ticks));
     if (err != ESP_OK) {
+        ESP_LOGW(TAG, "E22 TX blocked before UART write: AUX=%d", gpio_get_level(E22_PIN_AUX));
         goto done;
     }
 
@@ -606,6 +608,9 @@ esp_err_t e22_send(const uint8_t *data, size_t len, TickType_t timeout_ticks)
     vTaskDelay(pdMS_TO_TICKS(2));
     TickType_t remaining = remaining_ticks(start, timeout_ticks);
     err = remaining == 0 ? ESP_ERR_TIMEOUT : wait_aux_high(remaining);
+    if (err != ESP_OK)
+        ESP_LOGW(TAG, "E22 TX timed out after UART write: AUX=%d, frame=%u bytes",
+                 gpio_get_level(E22_PIN_AUX), (unsigned)frame_len);
 
 done:
     xSemaphoreGive(s_operation_mutex);

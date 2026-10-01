@@ -26,12 +26,20 @@ __VLS_asFunctionalElement1(__VLS_intrinsics.span, __VLS_intrinsics.span)({
 });
 /** @type {__VLS_StyleScopedClasses['section-kicker']} */ ;
 __VLS_asFunctionalElement1(__VLS_intrinsics.h2, __VLS_intrinsics.h2)({});
+(__VLS_ctx.tool.role === 'controller' ? '控制端' : '被控端');
 (__VLS_ctx.preferences.t('bleUpgrade'));
 __VLS_asFunctionalElement1(__VLS_intrinsics.span, __VLS_intrinsics.span)({
     ...{ class: "warning-badge" },
 });
 /** @type {__VLS_StyleScopedClasses['warning-badge']} */ ;
 (__VLS_ctx.preferences.t('devOta'));
+__VLS_asFunctionalElement1(__VLS_intrinsics.p, __VLS_intrinsics.p)({
+    ...{ class: "section-description" },
+});
+/** @type {__VLS_StyleScopedClasses['section-description']} */ ;
+(__VLS_ctx.tool.info.value?.bluetoothMac ?? '尚未连接');
+(__VLS_ctx.tool.expectedProject);
+(__VLS_ctx.tool.firmwareProject.value || '未选择');
 __VLS_asFunctionalElement1(__VLS_intrinsics.div, __VLS_intrinsics.div)({
     ...{ class: "firmware-grid" },
 });
@@ -125,7 +133,7 @@ __VLS_asFunctionalElement1(__VLS_intrinsics.p, __VLS_intrinsics.p)({
 /** @type {__VLS_StyleScopedClasses['warning-note']} */ ;
 (__VLS_ctx.preferences.t('otaWarning'));
 // @ts-ignore
-[preferences, preferences, preferences, preferences, preferences, preferences, preferences, preferences, preferences, preferences, preferences, preferences, preferences, tool, tool, tool, tool, tool, tool, tool, tool, tool, tool, tool, tool, tool, tool, tool, tool, tool, tool, tool,];
+[tool, tool, tool, tool, tool, tool, tool, tool, tool, tool, tool, tool, tool, tool, tool, tool, tool, tool, tool, tool, tool, tool, tool, preferences, preferences, preferences, preferences, preferences, preferences, preferences, preferences, preferences, preferences, preferences, preferences, preferences,];
 const __VLS_export = (await import('vue')).defineComponent({
     __typeProps: {},
 });

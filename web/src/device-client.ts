@@ -8,6 +8,8 @@ export interface DeviceConfig {
   alias: string
   statusPeriodMs: number
   radioTxTimeoutMs: number
+  radioLink?: number
+  espnowChannel?: number
 }
 
 export interface OtaProgress {
@@ -45,6 +47,7 @@ type LinkSample = { success: boolean; rttMs?: number }
 type FrameListener = (frame: StopFrame) => void
 
 export class StopDeviceClient {
+  constructor(private readonly advertisedName: string) {}
   private device?: BluetoothDevice
   private control?: BluetoothRemoteGATTCharacteristic
   private bulk?: BluetoothRemoteGATTCharacteristic
@@ -71,7 +74,7 @@ export class StopDeviceClient {
 
   async connect(): Promise<void> {
     if (!navigator.bluetooth) throw new Error('当前浏览器不支持 Web Bluetooth，请使用 Chrome 或 Edge')
-    this.device = await navigator.bluetooth.requestDevice({ filters: [{ namePrefix: 'STOP-C6' }], optionalServices: [UUID.service] })
+    this.device = await navigator.bluetooth.requestDevice({ filters: [{ name: this.advertisedName }], optionalServices: [UUID.service] })
     this.device.addEventListener('gattserverdisconnected', this.handleDisconnect)
     const server = await this.device.gatt?.connect()
     if (!server) throw new Error('无法创建 BLE GATT 连接')
@@ -185,6 +188,13 @@ export class StopDeviceClient {
   async getInfo(): Promise<DeviceInfo> { return parseDeviceInfo((await this.request(MessageType.DeviceInfoGet)).payload) }
   async getStatus(): Promise<DeviceStatus> { return parseDeviceStatus((await this.request(MessageType.DeviceStatusGet)).payload) }
 
+  async debugOutput(enable: boolean): Promise<void> {
+    await this.request(MessageType.DebugOutput, new Uint8Array([enable ? 1 : 0]))
+  }
+
+  async startPairing(): Promise<void> { await this.request(MessageType.PairModeStart) }
+  async startRadioListen(): Promise<void> { await this.request(MessageType.RadioListenStart) }
+
   async getOtaResult(): Promise<OtaResult> {
     return parseOtaResult((await this.request(MessageType.OtaResult)).payload)
   }
@@ -196,18 +206,27 @@ export class StopDeviceClient {
 
   async setConfig(config: DeviceConfig): Promise<DeviceConfig> {
     const alias = textBytes(config.alias)
-    const payload = new Uint8Array(1 + 5 + alias.length + 9 + 9)
+    const hasRadioConfig = config.radioLink !== undefined && config.espnowChannel !== undefined
+    if (hasRadioConfig && (!Number.isInteger(config.radioLink) || config.radioLink! < 0 || config.radioLink! > 2 ||
+      !Number.isInteger(config.espnowChannel) || config.espnowChannel! < 1 || config.espnowChannel! > 11)) {
+      throw new Error('无线模式必须为 0～2，ESP-NOW 信道必须为 1～11 的整数')
+    }
+    const payload = new Uint8Array(1 + 5 + alias.length + 9 + 9 + (hasRadioConfig ? 18 : 0))
     const view = new DataView(payload.buffer)
     let offset = 0
-    payload[offset++] = 3
+    payload[offset++] = hasRadioConfig ? 5 : 3
     view.setUint16(offset, 1, true); payload[offset + 2] = 3; view.setUint16(offset + 3, alias.length, true); payload.set(alias, offset + 5); offset += 5 + alias.length
     view.setUint16(offset, 2, true); payload[offset + 2] = 2; view.setUint16(offset + 3, 4, true); view.setUint32(offset + 5, config.statusPeriodMs, true); offset += 9
-    view.setUint16(offset, 3, true); payload[offset + 2] = 2; view.setUint16(offset + 3, 4, true); view.setUint32(offset + 5, config.radioTxTimeoutMs, true)
+    view.setUint16(offset, 3, true); payload[offset + 2] = 2; view.setUint16(offset + 3, 4, true); view.setUint32(offset + 5, config.radioTxTimeoutMs, true); offset += 9
+    if (hasRadioConfig) {
+      view.setUint16(offset, 4, true); payload[offset + 2] = 2; view.setUint16(offset + 3, 4, true); view.setUint32(offset + 5, config.radioLink!, true); offset += 9
+      view.setUint16(offset, 5, true); payload[offset + 2] = 2; view.setUint16(offset + 3, 4, true); view.setUint32(offset + 5, config.espnowChannel!, true)
+    }
     return parseConfig((await this.request(MessageType.ConfigSet, payload)).payload)
   }
 
   async radioSend(data: Uint8Array): Promise<number> {
-    if (data.length === 0 || data.length > 235) throw new Error('E22 数据长度必须为 1～235 字节')
+    if (data.length === 0 || data.length > 235) throw new Error('无线数据长度必须为 1～235 字节')
     const payload = new Uint8Array(2 + data.length)
     new DataView(payload.buffer).setUint16(0, data.length, true)
     payload.set(data, 2)
@@ -218,6 +237,8 @@ export class StopDeviceClient {
   async otaUpdate(
     image: Uint8Array,
     version: string,
+    productId: number,
+    hardwareRevision: number,
     onProgress: (progress: OtaProgress) => void,
     onAttempt?: (attempt: OtaAttempt) => void,
   ): Promise<OtaAttempt> {
@@ -232,8 +253,8 @@ export class StopDeviceClient {
     beginView.setUint32(0, transferId, true)
     beginView.setUint32(4, image.length, true)
     beginView.setUint16(8, 478, true)
-    beginView.setUint16(10, 1, true)
-    beginView.setUint16(12, 1, true)
+    beginView.setUint16(10, productId, true)
+    beginView.setUint16(12, hardwareRevision, true)
     begin[14] = versionBytes.length
     begin.set(versionBytes, 15)
     begin.set(sha, 15 + versionBytes.length)
@@ -263,7 +284,7 @@ export class StopDeviceClient {
 
 function parseConfig(payload: Uint8Array): DeviceConfig {
   if (payload.length < 1) throw new Error('参数响应为空')
-  const result: Partial<DeviceConfig> = {}
+  const result: Partial<DeviceConfig> = { radioLink: undefined, espnowChannel: undefined }
   const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength)
   let offset = 1
   for (let index = 0; index < payload[0]; index += 1) {
@@ -274,8 +295,11 @@ function parseConfig(payload: Uint8Array): DeviceConfig {
     if (key === 1 && type === 3) result.alias = bytesText(payload.subarray(offset, offset + length))
     else if (key === 2 && type === 2 && length === 4) result.statusPeriodMs = view.getUint32(offset, true)
     else if (key === 3 && type === 2 && length === 4) result.radioTxTimeoutMs = view.getUint32(offset, true)
+    else if (key === 4 && type === 2 && length === 4) result.radioLink = view.getUint32(offset, true)
+    else if (key === 5 && type === 2 && length === 4) result.espnowChannel = view.getUint32(offset, true)
     offset += length
   }
+  if (offset !== payload.length) throw new Error('参数 TLV 存在多余数据')
   if (result.alias === undefined || result.statusPeriodMs === undefined || result.radioTxTimeoutMs === undefined) throw new Error('设备缺少必要参数')
   return result as DeviceConfig
 }

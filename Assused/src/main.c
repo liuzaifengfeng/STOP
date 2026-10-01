@@ -1,125 +1,114 @@
-#include <stdio.h>
 #include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_ota_ops.h"
 #include "driver/gpio.h"
 #include "nvs_flash.h"
 #include "ble_device_service.h"
-#include "adc_monitor.h"
-#include "E22-400t22s.h"
+#include "ina226_monitor.h"
+#include "radio_transport.h"
 #include "ota_service.h"
+#include "receiver_safety.h"
+#include "vin_monitor.h"
+#include "status_led.h"
 
-#define BLINK_GPIO GPIO_NUM_22 // GPIO_NUM_22 is the BUZZER pin
+#define MCU_ENABLE GPIO_NUM_21
 
 static const char *TAG = "main";
-
-//蜂鸣器任务（物理心跳）
-static void blink_task(void *pvParameter)
-{
-    uint32_t boot_count = 0;
-    int buzzer_state = 1;
-
-    // 初始状态翻转测试
-    for (int i = 0; i < 4; i++) {
-        buzzer_state = !buzzer_state;
-        gpio_set_level(BLINK_GPIO, buzzer_state);
-        vTaskDelay(pdMS_TO_TICKS(100));
-    }
-
-    while (1) {
-        ESP_LOGI(TAG, "System running normally... counter: %lu", ++boot_count);
-
-        if (boot_count % 60 == 0) {
-            buzzer_state = 0;
-            gpio_set_level(BLINK_GPIO, buzzer_state);
-            vTaskDelay(pdMS_TO_TICKS(200));
-            buzzer_state = 1;
-            gpio_set_level(BLINK_GPIO, buzzer_state);
-        }
-        vTaskDelay(pdMS_TO_TICKS(10000));
-    }
-}
-
-// LoRa 接收演示任务 (从 E22 接收队列读取数据)
-static void __attribute__((unused)) e22_rx_demo_task(void *pvParameter)
-{
-    (void)pvParameter;
-    ESP_LOGI(TAG, "E22 RX demo task started");
-
-    while (1) {
-        e22_rx_msg_t msg;
-        // 阻塞等待接收数据 (1 秒超时)
-        if (e22_receive(&msg, pdMS_TO_TICKS(1000)) == ESP_OK) {
-            ESP_LOGI(TAG, "E22 RX [%u bytes]: %.*s", msg.len, msg.len, msg.data);
-        }
-    }
-}
-
-// LoRa 发送演示任务 (定时广播心跳)
-static void __attribute__((unused)) e22_tx_demo_task(void *pvParameter)
-{
-    (void)pvParameter;
-    ESP_LOGI(TAG, "E22 TX demo task started");
-    uint32_t seq = 0;
-
-    // 等待系统稳定
-    vTaskDelay(pdMS_TO_TICKS(5000));
-
-    while (1) {
-        uint8_t data[E22_MAX_PAYLOAD_LEN];
-        int len = snprintf((char *)data, sizeof(data), "HEARTBEAT seq=%lu", ++seq);
-
-        if (len > 0 && e22_send(data, (size_t)len, pdMS_TO_TICKS(1000)) == ESP_OK) {
-            ESP_LOGI(TAG, "E22 TX accepted: %s", data);
-        } else {
-            ESP_LOGW(TAG, "E22 TX failed");
-        }
-
-        // 每 30 秒广播一次
-        vTaskDelay(pdMS_TO_TICKS(30000));
-    }
-}
 
 void app_main(void)
 {
     ESP_LOGI(TAG, "============================================================");
-    ESP_LOGI(TAG, "ESP32-C6 boot successful!  BLE maintenance transport enabled.");
+    ESP_LOGI(TAG, "Receiver Beta boot: output locked OFF");
     ESP_LOGI(TAG, "============================================================");
 
-    // 1. 初始化 NVS（BLE PHY、后续配对信息和设备参数依赖 NVS）
+    /* 第一条硬件操作：拉低输出许可。网表另有 100k 下拉作上电保护。 */
+    gpio_set_level(MCU_ENABLE, 0);
+    gpio_config_t output_config = {
+        .pin_bit_mask = 1ULL << MCU_ENABLE,
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_ENABLE,
+    };
+    ESP_ERROR_CHECK(gpio_config(&output_config));
+    ESP_LOGI(TAG, "GPIO21 output permission: OFF (low); local key GPIO6: active low");
+    ESP_LOGI(TAG, "Pins: E22 M0=2 M1=3 RX=4 TX=5 AUX=14; INA226 SDA=22 SCL=19; VIN ADC=0; LED=20");
+
+    // 初始化 NVS（BLE PHY 和配置依赖 NVS）
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
         ret = nvs_flash_init();
     }
     ESP_ERROR_CHECK(ret);
+    ESP_LOGI(TAG, "NVS: ready");
 
-    // 2. 初始化硬件引脚
-    gpio_reset_pin(BLINK_GPIO);
-    gpio_set_direction(BLINK_GPIO, GPIO_MODE_OUTPUT);
-
-    // 3. 创建业务任务
-    xTaskCreate(blink_task, "blink_task", 4096, NULL, 5, NULL);
-
-    // 4. 初始化 ADC 电压监测
-    adc_monitor_init();
-
-    // 5. 初始化 E22-400T22S。模块故障不应拖垮主系统和 BLE 诊断。
-    esp_err_t e22_err = e22_init();
-    bool e22_ready = e22_err == ESP_OK;
-    if (!e22_ready) {
-        ESP_LOGE(TAG,
-                 "E22 initialization failed: %s; keeping system and BLE online "
-                 "for diagnostics",
-                 esp_err_to_name(e22_err));
+    // 根据 Beta 实际网表初始化 INA226；失败时仍保持断电并开放 BLE 诊断。
+    esp_err_t ina_err = ina226_monitor_init();
+    if (ina_err != ESP_OK) {
+        ESP_LOGE(TAG, "INA226 failed: %s; output remains OFF", esp_err_to_name(ina_err));
+    } else {
+        ina226_sample_t sample;
+        esp_err_t sample_err = ina226_monitor_read(&sample);
+        if (sample_err == ESP_OK) {
+            ESP_LOGI(TAG, "INA226 initial: VOUT=%ld mV, current=%ld mA",
+                     (long)sample.bus_mv, (long)sample.current_ma);
+        } else {
+            ESP_LOGW(TAG, "INA226 initial sample failed: %s",
+                     esp_err_to_name(sample_err));
+        }
+    }
+#if VIN_MONITOR_ENABLED
+    esp_err_t vin_err = vin_monitor_init();
+    if (vin_err != ESP_OK) {
+        ESP_LOGE(TAG, "VIN ADC failed: %s; output remains OFF", esp_err_to_name(vin_err));
+    } else {
+        int32_t vin_mv = 0;
+        esp_err_t read_err = vin_monitor_read_mv(&vin_mv);
+        if (read_err == ESP_OK) {
+            ESP_LOGI(TAG, "VIN ADC initial: %ld mV (R10=100k, R11=10k)",
+                     (long)vin_mv);
+        } else {
+            ESP_LOGW(TAG, "VIN ADC initial sample failed: %s",
+                     esp_err_to_name(read_err));
+        }
     }
 
-    // 6. BLE 管理服务：设备信息、状态、参数、E22 诊断和 OTA。
-    ESP_ERROR_CHECK(ble_device_service_start(e22_ready));
+#else
+    esp_err_t vin_err = ESP_ERR_NOT_SUPPORTED;
+    ESP_LOGW(TAG, "VIN ADC and input voltage protection temporarily DISABLED");
+#endif
 
-    // OTA 新镜像只有在关键服务均启动后才确认；E22 自检失败时保留回滚机会。
-    if (e22_ready) {
+    // 按 NVS 配置启动无线链路；ESP-NOW 模式不依赖 E22 模块。
+    esp_err_t radio_err = radio_transport_init();
+    bool radio_ready = radio_err == ESP_OK;
+    if (!radio_ready) {
+        ESP_LOGE(TAG,
+                 "Radio initialization failed: %s; keeping system and BLE online "
+                 "for diagnostics",
+                 esp_err_to_name(radio_err));
+    }
+
+    ESP_ERROR_CHECK(receiver_safety_start(radio_ready));
+    if (ina_err != ESP_OK || (VIN_MONITOR_ENABLED && vin_err != ESP_OK) || !radio_ready) {
+        ESP_LOGE(TAG, "Startup safety fault: INA226=%s, VIN=%s, radio=%s",
+                 esp_err_to_name(ina_err), esp_err_to_name(vin_err), radio_ready ? "OK" : "FAIL");
+        receiver_safety_hardware_fault();
+    }
+    esp_err_t led_err = status_led_start();
+    if (led_err != ESP_OK) {
+        ESP_LOGW(TAG, "WS2812 unavailable: %s", esp_err_to_name(led_err));
+    }
+
+    // BLE 管理服务沿用控制端 GATT UUID 与 STOP 帧格式。
+    ESP_ERROR_CHECK(ble_device_service_start(radio_ready));
+    ESP_LOGI(TAG, "Startup complete: radio=%s, INA226=%s, VIN ADC=%s, LED=%s; output=%s",
+             radio_ready ? "OK" : "FAIL", ina_err == ESP_OK ? "OK" : "FAIL",
+             VIN_MONITOR_ENABLED ? (vin_err == ESP_OK ? "OK" : "FAIL") : "DISABLED", led_err == ESP_OK ? "OK" : "FAIL",
+             "OFF until paired controller releases E-stop and 3 safe heartbeats arrive");
+    ESP_LOGI(TAG, "Serial status repeats every 10 s; hold local key 8 s to pair, 3 s to enable; temporary BLE debug interface also available");
+
+    // OTA 新镜像仅在 INA226 与当前无线链路均正常时确认。
+    if (radio_ready && ina_err == ESP_OK) {
         esp_err_t confirm_err = esp_ota_mark_app_valid_cancel_rollback();
         if (confirm_err == ESP_OK || confirm_err == ESP_ERR_NOT_SUPPORTED) {
             ota_service_mark_running_image_confirmed();

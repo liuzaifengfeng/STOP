@@ -2,14 +2,13 @@
 
 #include <string.h>
 
-#include "adc_monitor.h"
 #include "esp_app_desc.h"
 #include "esp_log.h"
 #include "esp_ota_ops.h"
 #include "nvs.h"
 #include "sha256_sw.h"
+#include "receiver_safety.h"
 
-#define OTA_MIN_BATTERY_SOC 20
 #define OTA_RESULT_NAMESPACE "ota_result"
 #define OTA_RESULT_KEY       "record"
 #define OTA_RESULT_MAGIC     0x5241544fUL
@@ -151,6 +150,9 @@ void ota_service_init(void)
 stop_error_t ota_service_begin(const uint8_t *payload, size_t payload_len,
                                uint16_t link_max_chunk)
 {
+    if (receiver_safety_state() == RECEIVER_ARMED) {
+        return STOP_ERROR_SAFETY_LOCKOUT;
+    }
     /* Fixed fields + version_len + sha256 + signature_len. */
     if (!s_hash_ready) {
         return STOP_ERROR_INTERNAL;
@@ -183,14 +185,9 @@ stop_error_t ota_service_begin(const uint8_t *payload, size_t payload_len,
         /* Application-level public-key verification is not provisioned yet. */
         return STOP_ERROR_IMAGE_REJECTED;
     }
-    if (product_id != STOP_PRODUCT_ID_BUTTON_BOX ||
+    if (product_id != STOP_PRODUCT_ID_RECEIVER_BOX ||
         hardware_rev != STOP_HARDWARE_REVISION) {
         return STOP_ERROR_IMAGE_REJECTED;
-    }
-
-    BatteryInfo battery;
-    if (get_battery_info(&battery) && battery.soc < OTA_MIN_BATTERY_SOC) {
-        return STOP_ERROR_SAFETY_LOCKOUT;
     }
 
     const esp_partition_t *partition = esp_ota_get_next_update_partition(NULL);

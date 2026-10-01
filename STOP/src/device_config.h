@@ -12,6 +12,8 @@ typedef enum {
     DEVICE_CONFIG_ALIAS = 0x0001,
     DEVICE_CONFIG_STATUS_PERIOD_MS = 0x0002,
     DEVICE_CONFIG_RADIO_TX_TIMEOUT_MS = 0x0003,
+    DEVICE_CONFIG_RADIO_LINK = 0x0004,
+    DEVICE_CONFIG_ESPNOW_CHANNEL = 0x0005,
 } device_config_key_t;
 
 typedef enum {
@@ -23,6 +25,8 @@ typedef struct {
     char alias[DEVICE_ALIAS_MAX_LEN + 1U];
     uint32_t status_period_ms;
     uint32_t radio_tx_timeout_ms;
+    uint32_t radio_link; /* 0=E22，1=ESP-NOW，2=双通道；重启生效 */
+    uint32_t espnow_channel; /* 1~11，两端相同；重启生效 */
 } device_config_t;
 
 esp_err_t device_config_init(void);

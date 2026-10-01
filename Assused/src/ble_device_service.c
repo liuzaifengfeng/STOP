@@ -2,8 +2,8 @@
 
 #include <string.h>
 
-#include "E22-400t22s.h"
-#include "adc_monitor.h"
+#include "radio_transport.h"
+#include "ina226_monitor.h"
 #include "ble_transport.h"
 #include "device_config.h"
 #include "esp_app_desc.h"
@@ -15,6 +15,8 @@
 #include "freertos/task.h"
 #include "ota_service.h"
 #include "stop_protocol.h"
+#include "receiver_safety.h"
+#include "vin_monitor.h"
 
 #define SERVICE_TASK_STACK       4096U
 #define SERVICE_TASK_PRIORITY    5U
@@ -96,7 +98,7 @@ static uint16_t encode_device_info(uint8_t *output, size_t capacity)
     capabilities |= CAP_OTA_SIGNED;
 #endif
     stop_write_le32(output + 1, capabilities);
-    stop_write_le16(output + 5, STOP_PRODUCT_ID_BUTTON_BOX);
+    stop_write_le16(output + 5, STOP_PRODUCT_ID_RECEIVER_BOX);
     stop_write_le16(output + 7, STOP_HARDWARE_REVISION);
     output[9] = (uint8_t)version_len;
     memcpy(output + 10, app->version, version_len);
@@ -108,14 +110,12 @@ static uint16_t encode_device_info(uint8_t *output, size_t capacity)
 
 static uint16_t encode_device_status(uint8_t *output, size_t capacity)
 {
-    if (capacity < 21U) {
+    if (capacity < 33U) {
         return 0U;
     }
-    BatteryInfo battery = {0};
-    bool battery_valid = get_battery_info(&battery);
-    uint32_t voltage_mv = battery_valid && battery.voltage_v > 0.0f
-                              ? (uint32_t)(battery.voltage_v * 1000.0f)
-                              : 0U;
+    ina226_sample_t power = {0};
+    bool power_valid = ina226_monitor_read(&power) == ESP_OK;
+    uint32_t voltage_mv = power_valid && power.bus_mv > 0 ? (uint32_t)power.bus_mv : 0U;
     if (voltage_mv > UINT16_MAX) {
         voltage_mv = UINT16_MAX;
     }
@@ -124,28 +124,39 @@ static uint16_t encode_device_status(uint8_t *output, size_t capacity)
 
     stop_write_le32(output, (uint32_t)(esp_timer_get_time() / 1000000LL));
     stop_write_le16(output + 4, (uint16_t)voltage_mv);
-    output[6] = battery_valid && battery.soc >= 0 && battery.soc <= 100
-                    ? (uint8_t)battery.soc
-                    : 0xffU;
+    output[6] = 0xffU; /* 输出母线电压不是电池电量，不能换算 SOC。 */
     output[7] = s_radio_ready ? 1U : 0U;
-    output[8] = (uint8_t)e22_get_mode();
+    output[8] = radio_transport_mode();
     output[9] = ble_transport_is_connected() ? 1U : 0U;
     stop_write_le16(output + 10, ble_transport_get_mtu());
     output[12] = (uint8_t)ota.state;
     stop_write_le16(output + 13, (uint16_t)ota.last_error);
     stop_write_le32(output + 15, ota.expected_offset);
-    output[19] = 0U; /* Safety state unavailable until safety_manager exists. */
+    output[19] = receiver_safety_state();
     int8_t rssi = 127;
     if (ble_transport_get_rssi(&rssi) != ESP_OK) {
         rssi = 127;
     }
     output[20] = (uint8_t)rssi;
-    return 21U;
+    /* 原有前 21 字节保持不变；被控端在尾部追加诊断字段。 */
+    int32_t current = power_valid ? power.current_ma : 0;
+    if (current > INT16_MAX) current = INT16_MAX;
+    if (current < INT16_MIN) current = INT16_MIN;
+    stop_write_le16(output + 21, (uint16_t)(int16_t)current);
+    output[23] = (power_valid ? 1U : 0U) |
+                 (power_valid && power.over_current ? 2U : 0U);
+    output[23] |= VIN_MONITOR_ENABLED ? 0U : 4U; /* bit2=VIN 检测禁用 */
+    int32_t vin_mv = 0;
+    if (vin_monitor_read_mv(&vin_mv) != ESP_OK || vin_mv < 0) vin_mv = 0;
+    if (vin_mv > UINT16_MAX) vin_mv = UINT16_MAX;
+    stop_write_le16(output + 24, (uint16_t)vin_mv);
+    output[26] = receiver_safety_pair_status(output + 27);
+    return 33U;
 }
 
 static void publish_status(void)
 {
-    uint8_t payload[32];
+    uint8_t payload[40];
     uint16_t payload_len = encode_device_status(payload, sizeof(payload));
     uint8_t frame[64];
     size_t frame_len;
@@ -228,14 +239,18 @@ static void handle_radio_send(const stop_frame_view_t *frame)
         return;
     }
     uint16_t data_len = stop_read_le16(frame->payload);
-    if (data_len == 0U || data_len > E22_MAX_PAYLOAD_LEN ||
+    if (data_len == 0U || data_len > RADIO_MAX_PAYLOAD_LEN ||
         frame->payload_len != data_len + 2U) {
         send_error(frame->request_id, STOP_ERROR_INVALID_ARGUMENT, false);
         return;
     }
+    if (data_len >= 2U && frame->payload[2] == 'S' && frame->payload[3] == 'R') {
+        send_error(frame->request_id, STOP_ERROR_SAFETY_LOCKOUT, false);
+        return;
+    }
     device_config_t config;
     device_config_get(&config);
-    esp_err_t err = e22_send(frame->payload + 2, data_len,
+    esp_err_t err = radio_transport_send(frame->payload + 2, data_len,
                              pdMS_TO_TICKS(config.radio_tx_timeout_ms));
     if (err != ESP_OK) {
         send_error(frame->request_id,
@@ -243,6 +258,10 @@ static void handle_radio_send(const stop_frame_view_t *frame)
                    false);
         return;
     }
+    ESP_LOGI(TAG, "Diagnostic TX accepted: %u bytes, prefix=%02x %02x %02x %02x",
+             (unsigned)data_len, frame->payload[2], data_len > 1U ? frame->payload[3] : 0U,
+             data_len > 2U ? frame->payload[4] : 0U,
+             data_len > 3U ? frame->payload[5] : 0U);
     uint8_t response[2];
     stop_write_le16(response, data_len);
     send_response(STOP_MSG_RADIO_SEND_RESULT, frame->request_id,
@@ -298,7 +317,7 @@ static void handle_control(const stop_frame_view_t *frame)
             send_error(frame->request_id, STOP_ERROR_INVALID_ARGUMENT, false);
             break;
         }
-        uint8_t payload[32];
+        uint8_t payload[40];
         uint16_t len = encode_device_status(payload, sizeof(payload));
         send_response(STOP_MSG_DEVICE_STATUS_EVENT, frame->request_id, payload, len);
         break;
@@ -309,6 +328,33 @@ static void handle_control(const stop_frame_view_t *frame)
     case STOP_MSG_CONFIG_SET:
         handle_config_set(frame);
         break;
+    case STOP_MSG_PAIR_MODE_START: {
+        if (frame->payload_len != 0U) {
+            send_error(frame->request_id, STOP_ERROR_INVALID_ARGUMENT, false);
+            break;
+        }
+        esp_err_t err = receiver_safety_open_pair_window();
+        if (err != ESP_OK) {
+            send_error(frame->request_id, STOP_ERROR_SAFETY_LOCKOUT, false);
+            break;
+        }
+        send_response(STOP_MSG_PAIR_MODE_START, frame->request_id, NULL, 0);
+        publish_status();
+        break;
+    }
+    case STOP_MSG_DEBUG_OUTPUT: {
+        if (frame->payload_len != 1U || frame->payload[0] > 1U) {
+            send_error(frame->request_id, STOP_ERROR_INVALID_ARGUMENT, false);
+            break;
+        }
+        if (receiver_safety_debug_output(frame->payload[0] == 1U) != ESP_OK) {
+            send_error(frame->request_id, STOP_ERROR_SAFETY_LOCKOUT, false);
+            break;
+        }
+        send_response(STOP_MSG_DEBUG_OUTPUT, frame->request_id, NULL, 0);
+        publish_status();
+        break;
+    }
     case STOP_MSG_RADIO_SEND:
         handle_radio_send(frame);
         break;
@@ -407,19 +453,22 @@ static void radio_rx_task(void *arg)
 {
     (void)arg;
     while (true) {
-        e22_rx_msg_t message;
-        if (e22_receive(&message, portMAX_DELAY) != ESP_OK) {
+        radio_rx_msg_t message;
+        if (radio_transport_receive(&message, portMAX_DELAY) != ESP_OK) {
             continue;
         }
-        uint8_t payload[2U + E22_MAX_PAYLOAD_LEN];
+        if (receiver_safety_on_radio(message.data, message.len)) continue;
+        ESP_LOGI(TAG, "Diagnostic RX: %u bytes, prefix=%02x %02x %02x %02x",
+                 (unsigned)message.len, message.data[0], message.len > 1U ? message.data[1] : 0U,
+                 message.len > 2U ? message.data[2] : 0U,
+                 message.len > 3U ? message.data[3] : 0U);
+        uint8_t payload[2U + RADIO_MAX_PAYLOAD_LEN];
         stop_write_le16(payload, message.len);
         memcpy(payload + 2, message.data, message.len);
         esp_err_t err = send_frame(false, STOP_MSG_RADIO_RX_EVENT, STOP_FLAG_EVENT,
                                    0, payload, (uint16_t)(message.len + 2U));
-        if (err != ESP_OK && err != ESP_ERR_INVALID_STATE &&
-            err != ESP_ERR_INVALID_SIZE) {
-            ESP_LOGW(TAG, "Radio RX event failed: %s", esp_err_to_name(err));
-        }
+        if (err == ESP_OK) ESP_LOGI(TAG, "Diagnostic RX forwarded to BLE");
+        else ESP_LOGW(TAG, "Diagnostic RX BLE event failed: %s", esp_err_to_name(err));
     }
 }
 

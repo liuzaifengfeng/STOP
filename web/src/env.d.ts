@@ -1,7 +1,7 @@
 /// <reference types="vite/client" />
 
 interface BluetoothRequestDeviceOptions {
-  filters?: Array<{ namePrefix?: string; services?: string[] }>
+  filters?: Array<{ name?: string; namePrefix?: string; services?: string[] }>
   optionalServices?: string[]
 }
 

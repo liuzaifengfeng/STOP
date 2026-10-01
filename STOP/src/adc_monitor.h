@@ -12,6 +12,10 @@ typedef struct {
     int soc;         // 电量百分比 (0-100)
 } BatteryInfo;
 
+int get_battery_soc(int voltage_mv);
+
+#define BATTERY_SHUTDOWN_MV 3500
+
 // 初始化 ADC (GPIO0) 并创建电压监测任务
 void adc_monitor_init(void);
 

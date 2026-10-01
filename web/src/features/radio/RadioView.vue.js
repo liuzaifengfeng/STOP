@@ -1,6 +1,45 @@
+import { ref } from 'vue';
 import { usePreferences } from '../../app/usePreferences';
-const __VLS_props = defineProps();
+const props = defineProps();
 const preferences = usePreferences();
+const preparing = ref(false);
+const radioHint = ref('');
+async function sendPacket() {
+    if (preparing.value)
+        return;
+    if (!props.tool.radioInput.value.trim()) {
+        radioHint.value = '请先输入诊断数据';
+        return;
+    }
+    preparing.value = true;
+    try {
+        if (props.tool.role === 'receiver' && props.controller.connected.value) {
+            if (!await props.receiver.refresh()) {
+                radioHint.value = '无法读取被控端输出状态，已取消发送';
+                return;
+            }
+            if (props.receiver.status.value?.safetyState === 3) {
+                radioHint.value = '被控端输出已接通，不能暂停安全心跳';
+                return;
+            }
+            radioHint.value = '控制端进入 10 秒接收窗口，暂停安全心跳后发送…';
+            if (!await props.controller.startRadioListen()) {
+                radioHint.value = `控制端未进入接收窗口：${props.controller.notice.value}`;
+                return;
+            }
+            await new Promise((resolve) => window.setTimeout(resolve, 500));
+        }
+        const sent = await props.tool.sendRadio();
+        radioHint.value = sent
+            ? props.tool.role === 'receiver' && props.controller.connected.value
+                ? '已发送；控制端接收窗口将在 10 秒后自动关闭'
+                : ''
+            : props.tool.notice.value;
+    }
+    finally {
+        preparing.value = false;
+    }
+}
 const __VLS_ctx = {
     ...{},
     ...{},
@@ -51,13 +90,20 @@ __VLS_asFunctionalElement1(__VLS_intrinsics.textarea, __VLS_intrinsics.textarea)
     placeholder: (__VLS_ctx.tool.radioMode.value === 'hex' ? '01 A0 FF' : __VLS_ctx.preferences.t('inputDiagnostic')),
 });
 __VLS_asFunctionalElement1(__VLS_intrinsics.button, __VLS_intrinsics.button)({
-    ...{ onClick: (__VLS_ctx.tool.sendRadio) },
+    ...{ onClick: (__VLS_ctx.sendPacket) },
     ...{ class: "button primary" },
-    disabled: (!__VLS_ctx.tool.connected.value || !__VLS_ctx.tool.status.value?.radioReady || __VLS_ctx.tool.busy.value),
+    disabled: (__VLS_ctx.preparing || !__VLS_ctx.tool.connected.value || !__VLS_ctx.tool.status.value?.radioReady || __VLS_ctx.tool.busy.value),
 });
 /** @type {__VLS_StyleScopedClasses['button']} */ ;
 /** @type {__VLS_StyleScopedClasses['primary']} */ ;
 (__VLS_ctx.preferences.t('sendPacket'));
+if (__VLS_ctx.radioHint) {
+    __VLS_asFunctionalElement1(__VLS_intrinsics.p, __VLS_intrinsics.p)({
+        ...{ class: "section-description" },
+    });
+    /** @type {__VLS_StyleScopedClasses['section-description']} */ ;
+    (__VLS_ctx.radioHint);
+}
 __VLS_asFunctionalElement1(__VLS_intrinsics.section, __VLS_intrinsics.section)({
     ...{ class: "panel terminal-panel" },
 });
@@ -110,7 +156,7 @@ else {
         __VLS_asFunctionalElement1(__VLS_intrinsics.code, __VLS_intrinsics.code)({});
         (item.value);
         // @ts-ignore
-        [preferences, preferences, preferences, preferences, preferences, preferences, preferences, preferences, preferences, tool, tool, tool, tool, tool, tool, tool, tool, tool, tool,];
+        [preferences, preferences, preferences, preferences, preferences, preferences, preferences, preferences, preferences, tool, tool, tool, tool, tool, tool, tool, tool, tool, sendPacket, preparing, radioHint, radioHint,];
     }
 }
 // @ts-ignore
